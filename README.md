@@ -1,36 +1,160 @@
 # AxonFlow SDK for Rust
 
+[![Crates.io](https://img.shields.io/crates/v/axonflow-sdk-rust.svg)](https://crates.io/crates/axonflow-sdk-rust)
+[![Documentation](https://docs.rs/axonflow-sdk-rust/badge.svg)](https://docs.rs/axonflow-sdk-rust)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Status: placeholder](https://img.shields.io/badge/Status-placeholder-orange.svg)](#status)
 
-> Official Rust SDK for AxonFlow — runtime control, MCP policy enforcement, approvals, and audit trails for production AI.
+Enterprise-grade Rust SDK for the AxonFlow AI governance platform. Add invisible AI governance to your applications with production-ready features including retry logic, caching, fail-open strategy, and debug mode.
 
-## Status
+## How This SDK Fits with AxonFlow
 
-This repository is a **placeholder** — the Rust SDK has not been written yet. The companion SDKs in [TypeScript](https://github.com/getaxonflow/axonflow-sdk-typescript), [Python](https://github.com/getaxonflow/axonflow-sdk-python), [Go](https://github.com/getaxonflow/axonflow-sdk-go), and [Java](https://github.com/getaxonflow/axonflow-sdk-java) are the reference implementations for the API contract a Rust port should mirror.
+This SDK is a client library for interacting with a running AxonFlow control plane. It is used from application or agent code to send execution context, policies, and requests at runtime.
 
-## How AxonFlow Fits
+A deployed AxonFlow platform (self-hosted or cloud) is required for end-to-end AI governance. SDKs alone are not sufficient—the platform and SDKs are designed to be used together.
 
-AxonFlow is an AI control plane that enforces policy, gates approvals, and records audit trails for AI agents and MCP-based tools at runtime. SDKs are thin clients that talk to a deployed AxonFlow control plane (self-hosted or cloud) — the platform and SDKs are designed to be used together. SDKs alone are not sufficient for end-to-end governance.
+## Installation
 
-For the full picture, see the [main project](https://github.com/getaxonflow/axonflow), the [docs site](https://docs.getaxonflow.com), or one of the existing SDK READMEs above.
+Add this to your `Cargo.toml`:
 
-## Contributing
+```toml
+[dependencies]
+axonflow-sdk-rust = "0.1.0"
+tokio = { version = "1", features = ["full"] }
+```
 
-We'd love a Rust SDK port. The most direct path is a community contribution.
+## Quick Start
 
-If you'd like to take a first pass:
+### Basic Usage (Invisible Governance via Interceptor)
 
-1. Read [CONTRIBUTING.md](./CONTRIBUTING.md) for the API contract reference, expected scope, and how to discuss the design before sinking in serious time.
-2. Open an issue or [GitHub Discussion](https://github.com/getaxonflow/axonflow/discussions) so we can scope and avoid duplicate work.
-3. Fork this repo, build, and open a PR.
+The most common way to use AxonFlow is via an **Interceptor**. This wraps your existing LLM client (e.g., an OpenAI-compatible client) and automatically applies governance to every call.
 
-If you've already prototyped a Rust SDK in a private repo and want to land it here, see CONTRIBUTING.md "Importing an existing port" for the simplest path.
+```rust
+use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig};
+use axonflow_sdk_rust::interceptors::openai::{WrappedOpenAIClient, ChatCompletionRequest, ChatMessage};
 
-## Security
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Initialize AxonFlow Client
+    let config = AxonFlowConfig::new("http://localhost:8080")
+        .with_auth("your-client-id", "your-client-secret");
+    let axon = AxonFlowClient::new(config)?;
 
-See [SECURITY.md](./SECURITY.md) for responsible disclosure.
+    // 2. Your existing OpenAI-compatible client (must implement OpenAIChatCompleter trait)
+    let openai_client = MyOpenAIClient::new("api-key");
+
+    // 3. Wrap it for automatic governance
+    let governed_client = WrappedOpenAIClient::new(openai_client, axon, "user-123");
+
+    // 4. Use as normal - governance is now "invisible"
+    let resp = governed_client.create_chat_completion(ChatCompletionRequest {
+        model: "gpt-4".to_string(),
+        messages: vec![ChatMessage { 
+            role: "user".to_string(), 
+            content: "Hello, AxonFlow!".to_string() 
+        }],
+        ..Default::default()
+    }).await?;
+
+    println!("Result: {}", resp.choices[0].message.content);
+    Ok(())
+}
+```
+
+### Manual Audit (Gateway Mode)
+
+If you are making LLM calls directly and just want to log them for compliance and cost tracking:
+
+```rust
+use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, TokenUsage};
+
+let axon = AxonFlowClient::new(AxonFlowConfig::new("http://localhost:8080"))?;
+
+// After your direct LLM call
+axon.audit_llm_call(
+    "request-id-from-llm",
+    "Summary of the response",
+    "openai",
+    "gpt-4",
+    TokenUsage { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+    250, // latency in ms
+    None, // optional metadata
+).await?;
+```
+
+## Examples
+
+The SDK includes several runnable examples demonstrating common integration patterns. You can find them in the `examples/` directory.
+
+### Running the Examples
+
+Before running the examples, set your AxonFlow credentials as environment variables:
+
+```bash
+export AXONFLOW_CLIENT_ID="your-client-id"
+export AXONFLOW_CLIENT_SECRET="your-client-secret"
+# Optional: defaults to http://localhost:8080
+export AXONFLOW_AGENT_URL="http://your-axonflow-endpoint"
+```
+
+Then use `cargo run --example <name>` to execute an example:
+
+*   **Basic Chat Governance**:
+    ```bash
+    cargo run --example basic
+    ```
+*   **Model Context Protocol (MCP) Connectors**:
+    ```bash
+    cargo run --example connectors
+    ```
+*   **Multi-Agent Planning (MAP)**:
+    ```bash
+    cargo run --example planning
+    ```
+*   **Invisible Governance (Interceptors)**:
+    ```bash
+    cargo run --example interceptors
+    ```
+
+## Advanced Features
+
+### Fail-Open Strategy
+In `Production` mode, if the AxonFlow platform is unreachable, the SDK will "fail-open." This ensures your application remains available even if the governance layer is degraded.
+
+### Caching
+The SDK includes a built-in async cache (powered by `moka`) with TTL support to reduce latency for redundant requests. Caching is automatically disabled for mutation operations like plan execution.
+
+### MCP & MAP Support
+The Rust SDK provides full parity for Model Context Protocol (MCP) and Multi-Agent Planning (MAP):
+*   **MCP**: List, install, and query Model Context connectors with full policy enforcement.
+*   **MAP**: Generate and execute complex multi-agent plans programmatically.
+
+## Configuration
+
+```rust
+let config = AxonFlowConfig {
+    endpoint: "http://localhost:8080".to_string(),
+    client_id: Some("id".into()),
+    client_secret: Some("secret".into()),
+    mode: Mode::Production,
+    debug: true,
+    timeout: Duration::from_secs(30),
+    retry: RetryConfig {
+        enabled: true,
+        max_attempts: 3,
+        initial_delay: Duration::from_secs(1),
+    },
+    cache: CacheConfig {
+        enabled: true,
+        ttl: Duration::from_secs(60),
+    },
+    ..Default::default()
+};
+```
+
+## Telemetry
+
+The SDK includes a non-blocking background heartbeat that follows the AxonFlow telemetry contract: **at most one anonymous ping per machine every 7 days**. This is used for licensing compliance and platform health monitoring.
 
 ## License
 
-[MIT](./LICENSE).
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
