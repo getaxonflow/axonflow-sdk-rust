@@ -24,6 +24,7 @@ pub struct ClientRequest {
     pub media: Option<Vec<MediaContent>>,
 }
 
+#[must_use]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClientResponse {
     pub success: bool,
@@ -100,6 +101,17 @@ pub struct TokenUsage {
     pub total_tokens: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuditRequest {
+    pub context_id: String,
+    pub response_summary: String,
+    pub provider: String,
+    pub model: String,
+    pub token_usage: TokenUsage,
+    pub latency_ms: i64,
+    pub metadata: Option<HashMap<String, serde_json::Value>>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditResult {
     pub success: bool,
@@ -133,7 +145,8 @@ pub struct ConnectorHealthStatus {
     pub latency: i64,
     pub details: HashMap<String, String>,
     pub timestamp: String,
-    pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -145,6 +158,7 @@ pub struct ConnectorInstallRequest {
     pub credentials: HashMap<String, String>,
 }
 
+#[must_use]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConnectorResponse {
     pub success: bool,
@@ -194,6 +208,7 @@ pub struct PlanStep {
     pub estimated_time: String,
 }
 
+#[must_use]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PlanResponse {
     pub plan_id: String,
@@ -226,6 +241,7 @@ pub struct StepResult {
     pub duration: String,
 }
 
+#[must_use]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PlanExecutionResponse {
     pub plan_id: String,

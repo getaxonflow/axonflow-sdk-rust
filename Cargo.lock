@@ -247,6 +247,7 @@ dependencies = [
  "home",
  "httpmock",
  "moka",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::client::AxonFlowClient;
 use crate::error::AxonFlowError;
-use crate::types::agent::TokenUsage;
+use crate::types::agent::{AuditRequest, TokenUsage};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatMessage {
@@ -103,21 +103,21 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
         // Make actual call
         let result = self.client.create_chat_completion(req.clone()).await?;
 
-        // Audit (async)
+        // Audit (async, fire-and-forget)
         let axonflow = Arc::clone(&self.axonflow);
         let result_clone = result.clone();
         let request_id = response.request_id.clone();
         let latency_ms = start_time.elapsed().as_millis() as i64;
+        let model = req.model.clone();
 
         tokio::spawn(async move {
             if let Some(context_id) = request_id {
                 let summary = result_clone.choices.first()
                     .map(|c| {
                         let content = &c.message.content;
-                        if content.len() > 100 {
-                            format!("{}...", &content[..100])
-                        } else {
-                            content.clone()
+                        match content.char_indices().nth(100) {
+                            Some((idx, _)) => format!("{}...", &content[..idx]),
+                            None => content.clone(),
                         }
                     })
                     .unwrap_or_default();
@@ -128,15 +128,17 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
                     total_tokens: result_clone.usage.total_tokens,
                 };
 
-                let _ = axonflow.audit_llm_call(
-                    &context_id,
-                    &summary,
-                    "openai",
-                    &req.model,
+                let audit_req = AuditRequest {
+                    context_id,
+                    response_summary: summary,
+                    provider: "openai".to_string(),
+                    model,
                     token_usage,
                     latency_ms,
-                    None,
-                ).await;
+                    metadata: None,
+                };
+
+                let _ = axonflow.audit_llm_call(&audit_req).await;
             }
         });
 

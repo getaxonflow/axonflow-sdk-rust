@@ -22,11 +22,12 @@ pub fn maybe_send_heartbeat(endpoint: &str) {
                 }
             }
 
-            // Fire the heartbeat in the background
             let endpoint = endpoint.to_string();
-            tokio::spawn(async move {
-                send_heartbeat(&endpoint, stamp_path).await;
-            });
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    send_heartbeat(&endpoint, stamp_path).await;
+                });
+            }
         }
     });
 }

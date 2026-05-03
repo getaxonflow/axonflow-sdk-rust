@@ -1,15 +1,11 @@
+use std::fmt;
 use std::time::Duration;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
+    #[default]
     Production,
     Sandbox,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Self::Production
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +40,7 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AxonFlowConfig {
     pub endpoint: String,
     pub client_id: Option<String>,
@@ -56,6 +52,23 @@ pub struct AxonFlowConfig {
     pub retry: RetryConfig,
     pub cache: CacheConfig,
     pub insecure_skip_tls_verify: bool,
+}
+
+impl fmt::Debug for AxonFlowConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AxonFlowConfig")
+            .field("endpoint", &self.endpoint)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "[REDACTED]"))
+            .field("mode", &self.mode)
+            .field("debug", &self.debug)
+            .field("timeout", &self.timeout)
+            .field("map_timeout", &self.map_timeout)
+            .field("retry", &self.retry)
+            .field("cache", &self.cache)
+            .field("insecure_skip_tls_verify", &self.insecure_skip_tls_verify)
+            .finish()
+    }
 }
 
 impl Default for AxonFlowConfig {
@@ -91,6 +104,26 @@ impl AxonFlowConfig {
 
     pub fn with_mode(mut self, mode: Mode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_map_timeout(mut self, timeout: Duration) -> Self {
+        self.map_timeout = timeout;
+        self
+    }
+
+    pub fn with_retry(mut self, retry: RetryConfig) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    pub fn with_cache(mut self, cache: CacheConfig) -> Self {
+        self.cache = cache;
         self
     }
 }

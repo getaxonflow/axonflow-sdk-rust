@@ -1,6 +1,6 @@
 pub mod openai;
 
 pub use openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, OpenAIChatCompleter,
-    WrappedOpenAIClient,
+    ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
+    OpenAIChatCompleter, Usage, WrappedOpenAIClient,
 };

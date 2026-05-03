@@ -3,20 +3,29 @@ use crate::error::AxonFlowError;
 use crate::heartbeat::maybe_send_heartbeat;
 use crate::types::agent::{ClientRequest, ClientResponse};
 use moka::future::Cache;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
 
+#[derive(Clone)]
 pub struct AxonFlowClient {
     config: AxonFlowConfig,
     http_client: reqwest::Client,
+    map_http_client: reqwest::Client,
     cache: Option<Arc<Cache<String, ClientResponse>>>,
 }
 
 impl AxonFlowClient {
     pub fn new(mut config: AxonFlowConfig) -> Result<Self, AxonFlowError> {
-        // Try mode override
+        if config.retry.max_attempts == 0 {
+            return Err(AxonFlowError::ConfigError(
+                "retry.max_attempts must be at least 1".to_string(),
+            ));
+        }
+
         if std::env::var("AXONFLOW_TRY").unwrap_or_default() == "1" {
             config.endpoint = "https://try.getaxonflow.com".to_string();
             if config.client_id.is_none() {
@@ -48,18 +57,26 @@ impl AxonFlowClient {
             }
         }
 
-        let builder = reqwest::Client::builder()
-            .timeout(config.timeout)
-            .default_headers(headers);
+        let accept_invalid = config.insecure_skip_tls_verify
+            || std::env::var("AXONFLOW_INSECURE_TLS").unwrap_or_default() == "1";
 
-        let builder = if config.insecure_skip_tls_verify || std::env::var("NODE_TLS_REJECT_UNAUTHORIZED").unwrap_or_default() == "0" {
+        if accept_invalid {
             warn!("TLS certificate verification is disabled.");
-            builder.danger_accept_invalid_certs(true)
-        } else {
-            builder
-        };
+        }
 
-        let http_client = builder.build().map_err(AxonFlowError::HttpError)?;
+        let http_client = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .default_headers(headers.clone())
+            .danger_accept_invalid_certs(accept_invalid)
+            .build()
+            .map_err(AxonFlowError::HttpError)?;
+
+        let map_http_client = reqwest::Client::builder()
+            .timeout(config.map_timeout)
+            .default_headers(headers)
+            .danger_accept_invalid_certs(accept_invalid)
+            .build()
+            .map_err(AxonFlowError::HttpError)?;
 
         let cache = if config.cache.enabled {
             Some(Arc::new(
@@ -76,6 +93,7 @@ impl AxonFlowClient {
         Ok(Self {
             config,
             http_client,
+            map_http_client,
             cache,
         })
     }
@@ -85,7 +103,7 @@ impl AxonFlowClient {
         user_token: &str,
         query: &str,
         request_type: &str,
-        context: std::collections::HashMap<String, serde_json::Value>,
+        context: HashMap<String, serde_json::Value>,
     ) -> Result<ClientResponse, AxonFlowError> {
         let user_token = if user_token.is_empty() {
             "anonymous"
@@ -93,19 +111,16 @@ impl AxonFlowClient {
             user_token
         };
 
-        let cache_key = format!("{}:{}:{}", request_type, query, user_token);
-        
-        let is_mutation = request_type == "execute-plan"
-            || request_type == "generate-plan"
-            || request_type == "cancel-plan"
-            || request_type == "update-plan";
+        let is_mutation = matches!(
+            request_type,
+            "execute-plan" | "generate-plan" | "cancel-plan" | "update-plan"
+        );
 
         if !is_mutation {
             if let Some(cache) = &self.cache {
+                let cache_key = self.build_cache_key(request_type, query, user_token, &context);
                 if let Some(cached) = cache.get(&cache_key).await {
-                    if self.config.debug {
-                        debug!("Cache hit for query");
-                    }
+                    debug!("Cache hit for query");
                     return Ok(cached);
                 }
             }
@@ -121,7 +136,7 @@ impl AxonFlowClient {
         };
 
         let resp = if self.config.retry.enabled && !is_mutation {
-            self.execute_with_retry(req).await
+            self.execute_with_retry(&req).await
         } else {
             self.execute_request(&req).await
         };
@@ -130,16 +145,20 @@ impl AxonFlowClient {
             Ok(response) => {
                 if response.success && !is_mutation {
                     if let Some(cache) = &self.cache {
+                        let cache_key = self.build_cache_key(
+                            request_type,
+                            query,
+                            user_token,
+                            &req.context,
+                        );
                         cache.insert(cache_key, response.clone()).await;
                     }
                 }
                 Ok(response)
             }
             Err(e) => {
-                if self.config.mode == Mode::Production && e.is_retryable() {
-                    if self.config.debug {
-                        debug!("AxonFlow unavailable, failing open: {}", e);
-                    }
+                if self.config.mode == Mode::Production && e.is_fail_open_eligible() {
+                    debug!("AxonFlow unavailable, failing open: {}", e);
                     Ok(ClientResponse::fail_open(e))
                 } else {
                     Err(e)
@@ -149,67 +168,42 @@ impl AxonFlowClient {
     }
 
     // ============================================================================
-    // MCP Connector Management (Issue #963, #975)
+    // MCP Connector Management
     // ============================================================================
 
     pub async fn list_connectors(&self) -> Result<Vec<crate::types::agent::ConnectorMetadata>, AxonFlowError> {
         let url = format!("{}/api/v1/connectors", self.config.endpoint);
-        let resp = self.http_client.get(&url).send().await?;
-
-        if resp.status() != reqwest::StatusCode::OK {
-            return Err(AxonFlowError::ApiError {
-                status: resp.status().as_u16(),
-                message: resp.text().await?,
-            });
-        }
+        let resp = self.checked_get(&url).await?;
 
         let body: serde_json::Value = resp.json().await?;
         let connectors = body["connectors"].as_array()
-            .ok_or_else(|| AxonFlowError::SerdeError(serde::de::Error::custom("missing connectors field")))?;
+            .ok_or_else(|| AxonFlowError::ApiError {
+                status: 200,
+                message: "response missing 'connectors' field".to_string(),
+            })?;
 
         let result = serde_json::from_value(serde_json::Value::Array(connectors.clone()))?;
         Ok(result)
     }
 
     pub async fn get_connector(&self, connector_id: &str) -> Result<crate::types::agent::ConnectorMetadata, AxonFlowError> {
-        let url = format!("{}/api/v1/connectors/{}", self.config.endpoint, connector_id);
-        let resp = self.http_client.get(&url).send().await?;
-
-        if resp.status() != reqwest::StatusCode::OK {
-            return Err(AxonFlowError::ApiError {
-                status: resp.status().as_u16(),
-                message: resp.text().await?,
-            });
-        }
-
+        let encoded_id = utf8_percent_encode(connector_id, NON_ALPHANUMERIC);
+        let url = format!("{}/api/v1/connectors/{}", self.config.endpoint, encoded_id);
+        let resp = self.checked_get(&url).await?;
         Ok(resp.json().await?)
     }
 
     pub async fn get_connector_health(&self, connector_id: &str) -> Result<crate::types::agent::ConnectorHealthStatus, AxonFlowError> {
-        let url = format!("{}/api/v1/connectors/{}/health", self.config.endpoint, connector_id);
-        let resp = self.http_client.get(&url).send().await?;
-
-        if resp.status() != reqwest::StatusCode::OK {
-            return Err(AxonFlowError::ApiError {
-                status: resp.status().as_u16(),
-                message: resp.text().await?,
-            });
-        }
-
+        let encoded_id = utf8_percent_encode(connector_id, NON_ALPHANUMERIC);
+        let url = format!("{}/api/v1/connectors/{}/health", self.config.endpoint, encoded_id);
+        let resp = self.checked_get(&url).await?;
         Ok(resp.json().await?)
     }
 
     pub async fn install_connector(&self, req: crate::types::agent::ConnectorInstallRequest) -> Result<(), AxonFlowError> {
         let url = format!("{}/api/v1/connectors", self.config.endpoint);
         let resp = self.http_client.post(&url).json(&req).send().await?;
-
-        if resp.status() != reqwest::StatusCode::OK {
-            return Err(AxonFlowError::ApiError {
-                status: resp.status().as_u16(),
-                message: resp.text().await?,
-            });
-        }
-
+        Self::check_status(resp).await?;
         Ok(())
     }
 
@@ -218,7 +212,7 @@ impl AxonFlowClient {
         user_token: &str,
         connector_name: &str,
         query: &str,
-        params: std::collections::HashMap<String, serde_json::Value>,
+        params: HashMap<String, serde_json::Value>,
     ) -> Result<crate::types::agent::ConnectorResponse, AxonFlowError> {
         let req_body = serde_json::json!({
             "user_token": user_token,
@@ -230,27 +224,21 @@ impl AxonFlowClient {
 
         let url = format!("{}/api/v1/query", self.config.endpoint);
         let resp = self.http_client.post(&url).json(&req_body).send().await?;
-
-        if resp.status() != reqwest::StatusCode::OK {
-            return Err(AxonFlowError::ApiError {
-                status: resp.status().as_u16(),
-                message: resp.text().await?,
-            });
-        }
-
+        let resp = Self::check_status(resp).await?;
         Ok(resp.json().await?)
     }
 
     // ============================================================================
-    // Multi-Agent Planning (MAP) (Issue #1019, #1020)
+    // Multi-Agent Planning (MAP)
     // ============================================================================
 
-    pub async fn generate_plan(&self, query: &str, _domain: &str, user_token: Option<&str>) -> Result<crate::types::agent::PlanResponse, AxonFlowError> {
-        let context = std::collections::HashMap::new();
+    pub async fn generate_plan(&self, query: &str, domain: &str, user_token: Option<&str>) -> Result<crate::types::agent::PlanResponse, AxonFlowError> {
+        let mut context = HashMap::new();
+        context.insert("domain".to_string(), serde_json::json!(domain));
         let user_token = user_token.unwrap_or("anonymous");
-        
+
         let resp = self.proxy_llm_call(user_token, query, "generate-plan", context).await?;
-        
+
         if let Some(data) = resp.data {
             let plan: crate::types::agent::PlanResponse = serde_json::from_value(data)?;
             Ok(plan)
@@ -263,7 +251,7 @@ impl AxonFlowClient {
     }
 
     pub async fn execute_plan(&self, plan_id: &str, user_token: Option<&str>) -> Result<crate::types::agent::PlanExecutionResponse, AxonFlowError> {
-        let mut context = std::collections::HashMap::new();
+        let mut context = HashMap::new();
         context.insert("plan_id".to_string(), serde_json::json!(plan_id));
         let user_token = user_token.unwrap_or("anonymous");
 
@@ -281,16 +269,9 @@ impl AxonFlowClient {
     }
 
     pub async fn get_plan_status(&self, plan_id: &str) -> Result<crate::types::agent::PlanExecutionResponse, AxonFlowError> {
-        let url = format!("{}/api/v1/plans/{}/status", self.config.endpoint, plan_id);
-        let resp = self.http_client.get(&url).send().await?;
-
-        if resp.status() != reqwest::StatusCode::OK {
-            return Err(AxonFlowError::ApiError {
-                status: resp.status().as_u16(),
-                message: resp.text().await?,
-            });
-        }
-
+        let encoded_id = utf8_percent_encode(plan_id, NON_ALPHANUMERIC);
+        let url = format!("{}/api/v1/plans/{}/status", self.config.endpoint, encoded_id);
+        let resp = self.checked_map_get(&url).await?;
         Ok(resp.json().await?)
     }
 
@@ -299,46 +280,34 @@ impl AxonFlowClient {
             "reason": reason.unwrap_or("user_cancelled"),
         });
 
-        let url = format!("{}/api/v1/plans/{}/cancel", self.config.endpoint, plan_id);
-        let resp = self.http_client.post(&url).json(&req_body).send().await?;
-
-        if resp.status() != reqwest::StatusCode::OK {
-            return Err(AxonFlowError::ApiError {
-                status: resp.status().as_u16(),
-                message: resp.text().await?,
-            });
-        }
-
+        let encoded_id = utf8_percent_encode(plan_id, NON_ALPHANUMERIC);
+        let url = format!("{}/api/v1/plans/{}/cancel", self.config.endpoint, encoded_id);
+        let resp = self.map_http_client.post(&url).json(&req_body).send().await?;
+        let resp = Self::check_status(resp).await?;
         Ok(resp.json().await?)
     }
 
     pub async fn audit_llm_call(
         &self,
-        context_id: &str,
-        response_summary: &str,
-        provider: &str,
-        model: &str,
-        token_usage: crate::types::agent::TokenUsage,
-        latency_ms: i64,
-        metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+        req: &crate::types::agent::AuditRequest,
     ) -> Result<crate::types::agent::AuditResult, AxonFlowError> {
         let client_id = self.get_effective_client_id();
 
         let mut req_body = serde_json::json!({
-            "context_id": context_id,
+            "context_id": req.context_id,
             "client_id": client_id,
-            "response_summary": response_summary,
-            "provider": provider,
-            "model": model,
+            "response_summary": req.response_summary,
+            "provider": req.provider,
+            "model": req.model,
             "token_usage": {
-                "prompt_tokens": token_usage.prompt_tokens,
-                "completion_tokens": token_usage.completion_tokens,
-                "total_tokens": token_usage.total_tokens,
+                "prompt_tokens": req.token_usage.prompt_tokens,
+                "completion_tokens": req.token_usage.completion_tokens,
+                "total_tokens": req.token_usage.total_tokens,
             },
-            "latency_ms": latency_ms,
+            "latency_ms": req.latency_ms,
         });
 
-        if let Some(meta) = metadata {
+        if let Some(meta) = &req.metadata {
             req_body["metadata"] = serde_json::to_value(meta)?;
         } else {
             req_body["metadata"] = serde_json::json!({});
@@ -361,11 +330,51 @@ impl AxonFlowClient {
         }
     }
 
+    // ============================================================================
+    // Private helpers
+    // ============================================================================
+
     fn get_effective_client_id(&self) -> String {
         self.config.client_id.clone().unwrap_or_else(|| "community".to_string())
     }
 
-    async fn execute_with_retry(&self, req: ClientRequest) -> Result<ClientResponse, AxonFlowError> {
+    fn build_cache_key(
+        &self,
+        request_type: &str,
+        query: &str,
+        user_token: &str,
+        context: &HashMap<String, serde_json::Value>,
+    ) -> String {
+        let context_hash = if context.is_empty() {
+            String::new()
+        } else {
+            let sorted: std::collections::BTreeMap<_, _> = context.iter().collect();
+            format!(":{}", serde_json::to_string(&sorted).unwrap_or_default())
+        };
+        format!("{}:{}:{}{}", request_type, query, user_token, context_hash)
+    }
+
+    async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
+        let resp = self.http_client.get(url).send().await?;
+        Self::check_status(resp).await
+    }
+
+    async fn checked_map_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
+        let resp = self.map_http_client.get(url).send().await?;
+        Self::check_status(resp).await
+    }
+
+    async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, AxonFlowError> {
+        if resp.status().is_success() {
+            Ok(resp)
+        } else {
+            let status = resp.status().as_u16();
+            let message = resp.text().await?;
+            Err(AxonFlowError::ApiError { status, message })
+        }
+    }
+
+    async fn execute_with_retry(&self, req: &ClientRequest) -> Result<ClientResponse, AxonFlowError> {
         let mut last_err = None;
 
         for attempt in 0..self.config.retry.max_attempts {
@@ -374,12 +383,12 @@ impl AxonFlowClient {
                 tokio::time::sleep(Duration::from_secs_f64(delay)).await;
             }
 
-            match self.execute_request(&req).await {
+            match self.execute_request(req).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
                     if let AxonFlowError::ApiError { status, .. } = &e {
                         if *status >= 400 && *status < 500 && *status != 429 && *status != 402 && *status != 403 {
-                            return Err(e); // Don't retry 4xx errors unless 429/402/403
+                            return Err(e);
                         }
                     }
                     last_err = Some(e);
@@ -387,7 +396,9 @@ impl AxonFlowClient {
             }
         }
 
-        Err(last_err.unwrap())
+        Err(last_err.unwrap_or_else(|| {
+            AxonFlowError::ConfigError("retry loop completed with no attempts".to_string())
+        }))
     }
 
     async fn execute_request(&self, req: &ClientRequest) -> Result<ClientResponse, AxonFlowError> {

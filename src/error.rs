@@ -19,6 +19,16 @@ impl AxonFlowError {
         match self {
             AxonFlowError::HttpError(e) => e.is_timeout() || e.is_connect(),
             AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
+            AxonFlowError::Unavailable(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_fail_open_eligible(&self) -> bool {
+        match self {
+            AxonFlowError::HttpError(e) => e.is_timeout() || e.is_connect(),
+            AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
+            AxonFlowError::Unavailable(_) => true,
             _ => false,
         }
     }

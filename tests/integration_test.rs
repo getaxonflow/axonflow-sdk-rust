@@ -160,11 +160,18 @@ async fn test_proxy_llm_call_blocked() {
 
 #[tokio::test]
 async fn test_proxy_llm_call_fail_open() {
-    // Port 1 is usually not listening
+    let server = MockServer::start();
+
+    let _mock = server.mock(|when, then| {
+        when.method(POST).path("/api/request");
+        then.status(503);
+    });
+
     let config = AxonFlowConfig {
-        endpoint: "http://127.0.0.1:1".to_string(),
+        endpoint: server.url(""),
         mode: Mode::Production,
-        retry: RetryConfig { max_attempts: 1, ..Default::default() },
+        retry: RetryConfig { enabled: true, max_attempts: 1, ..Default::default() },
+        cache: CacheConfig { enabled: false, ..Default::default() },
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
