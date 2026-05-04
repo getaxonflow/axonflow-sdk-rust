@@ -1,15 +1,14 @@
-use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, RetryConfig, CacheConfig};
+use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, CacheConfig, RetryConfig};
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration from environment variables
-    let agent_url = std::env::var("AXONFLOW_AGENT_URL")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let client_id = std::env::var("AXONFLOW_CLIENT_ID")
-        .expect("AXONFLOW_CLIENT_ID must be set");
-    let client_secret = std::env::var("AXONFLOW_CLIENT_SECRET")
-        .expect("AXONFLOW_CLIENT_SECRET must be set");
+    let agent_url =
+        std::env::var("AXONFLOW_AGENT_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let client_id = std::env::var("AXONFLOW_CLIENT_ID").expect("AXONFLOW_CLIENT_ID must be set");
+    let client_secret =
+        std::env::var("AXONFLOW_CLIENT_SECRET").expect("AXONFLOW_CLIENT_SECRET must be set");
 
     // Initialize client with advanced configuration
     println!("Initializing AxonFlow client with advanced features...");
@@ -62,7 +61,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if exec_resp.status == "completed" {
         println!("\nPlan Result: {:?}", exec_resp.result);
     } else {
-        println!("❌ Plan execution failed: {}", exec_resp.error.unwrap_or_default());
+        println!(
+            "❌ Plan execution failed: {}",
+            exec_resp.error.unwrap_or_default()
+        );
     }
 
     Ok(())

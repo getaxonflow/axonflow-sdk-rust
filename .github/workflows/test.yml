@@ -40,20 +40,17 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
-    name: Test (${{ matrix.rust }})
+    name: Test
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: [stable, '1.75']
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --all-targets --all-features
       - run: cargo test --all-features
+    # MSRV matrix deferred — Cargo.lock format v4 requires Cargo 1.78+. Will
+    # be re-added once axonflow-sdk-rust#8 establishes an explicit
+    # rust-version in Cargo.toml.
 
   examples:
     name: Build Examples

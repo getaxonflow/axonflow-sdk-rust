@@ -59,7 +59,10 @@ impl fmt::Debug for AxonFlowConfig {
         f.debug_struct("AxonFlowConfig")
             .field("endpoint", &self.endpoint)
             .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("mode", &self.mode)
             .field("debug", &self.debug)
             .field("timeout", &self.timeout)
@@ -96,7 +99,11 @@ impl AxonFlowConfig {
         }
     }
 
-    pub fn with_auth(mut self, client_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
+    pub fn with_auth(
+        mut self,
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+    ) -> Self {
         self.client_id = Some(client_id.into());
         self.client_secret = Some(client_secret.into());
         self

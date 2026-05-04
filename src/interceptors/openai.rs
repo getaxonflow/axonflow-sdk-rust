@@ -1,9 +1,9 @@
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use crate::client::AxonFlowClient;
 use crate::error::AxonFlowError;
 use crate::types::agent::{AuditRequest, TokenUsage};
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatMessage {
@@ -73,7 +73,9 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
         req: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, Box<dyn std::error::Error + Send + Sync>> {
         // Extract prompt
-        let prompt = req.messages.iter()
+        let prompt = req
+            .messages
+            .iter()
             .map(|m| format!("{}: {}", m.role, m.content))
             .collect::<Vec<_>>()
             .join("\n");
@@ -90,13 +92,18 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
 
         // Check with AxonFlow
         let start_time = std::time::Instant::now();
-        let response = self.axonflow.proxy_llm_call(&self.user_token, &prompt, "llm_chat", eval_context).await
+        let response = self
+            .axonflow
+            .proxy_llm_call(&self.user_token, &prompt, "llm_chat", eval_context)
+            .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
         if response.blocked {
             return Err(Box::new(AxonFlowError::ApiError {
                 status: 403,
-                message: response.block_reason.unwrap_or_else(|| "Blocked by policy".to_string()),
+                message: response
+                    .block_reason
+                    .unwrap_or_else(|| "Blocked by policy".to_string()),
             }));
         }
 
@@ -112,7 +119,9 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
 
         tokio::spawn(async move {
             if let Some(context_id) = request_id {
-                let summary = result_clone.choices.first()
+                let summary = result_clone
+                    .choices
+                    .first()
                     .map(|c| {
                         let content = &c.message.content;
                         match content.char_indices().nth(100) {

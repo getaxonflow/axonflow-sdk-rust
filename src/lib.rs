@@ -6,7 +6,7 @@ pub mod interceptors;
 pub mod types;
 
 pub use client::AxonFlowClient;
-pub use config::{AxonFlowConfig, Mode, RetryConfig, CacheConfig};
+pub use config::{AxonFlowConfig, CacheConfig, Mode, RetryConfig};
 pub use error::AxonFlowError;
 pub use types::agent::{
     AuditRequest, AuditResult, BudgetInfo, CancelPlanResponse, ClientRequest, ClientResponse,

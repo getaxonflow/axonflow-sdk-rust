@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- CI workflows: `test.yml` (fmt, clippy, build, test on stable + MSRV 1.75, build all examples), `audit.yml` (`cargo audit` weekly + on Cargo.lock change), `release.yml` (preflight CHANGELOG + version match, release-on-tag).
+- CI workflows: `test.yml` (fmt, clippy, build, test on stable, build all examples), `audit.yml` (`cargo audit` weekly + on Cargo.lock change), `release.yml` (preflight CHANGELOG + version match, release-on-tag).
 - `.github/dependabot.yml` covering cargo + github-actions ecosystems.
 - `.github/pull_request_template.md` and `.github/CODEOWNERS`.
 
