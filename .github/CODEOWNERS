@@ -1,0 +1,7 @@
+# Default: SDK maintainers review everything.
+*                          @saurabhjain1592
+
+# CI / release infra changes get explicit ownership.
+/.github/                  @saurabhjain1592
+/Cargo.toml                @saurabhjain1592
+/Cargo.lock                @saurabhjain1592
