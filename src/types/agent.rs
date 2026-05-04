@@ -1,5 +1,21 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+
+/// Deserialize helper: when the wire value is `null`, fall back to `T::default()`.
+///
+/// The platform sometimes serializes empty collections as `null` rather than
+/// `[]`. `#[serde(default)]` only fires for missing fields, so without this
+/// helper a payload containing `"policies_evaluated": null` would fail with
+/// "invalid type: null, expected a sequence". Combine with `#[serde(default)]`
+/// so both null AND missing are tolerated.
+fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    let opt = Option::<T>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaContent {
@@ -82,11 +98,12 @@ pub struct BudgetInfo {
     pub action: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct PolicyEvaluationInfo {
-    #[serde(default)]
+    #[serde(deserialize_with = "null_to_default")]
     pub policies_evaluated: Vec<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "null_to_default")]
     pub static_checks: Vec<String>,
     pub processing_time: String,
     pub tenant_id: String,
@@ -112,23 +129,29 @@ pub struct AuditRequest {
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct AuditResult {
     pub success: bool,
     pub audit_id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct ConnectorMetadata {
     pub id: String,
     pub name: String,
+    #[serde(rename = "type")]
     pub r#type: String,
     pub version: String,
     pub description: String,
     pub category: String,
     pub icon: String,
+    #[serde(deserialize_with = "null_to_default")]
     pub tags: Vec<String>,
+    #[serde(deserialize_with = "null_to_default")]
     pub capabilities: Vec<String>,
+    #[serde(deserialize_with = "null_to_default")]
     pub config_schema: HashMap<String, serde_json::Value>,
     pub installed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,13 +162,15 @@ pub struct ConnectorMetadata {
     pub last_check: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct ConnectorHealthStatus {
     pub healthy: bool,
     pub latency: i64,
+    #[serde(deserialize_with = "null_to_default")]
     pub details: HashMap<String, String>,
     pub timestamp: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -169,7 +194,7 @@ pub struct ConnectorResponse {
     pub meta: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]
     pub redacted: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub redacted_fields: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_info: Option<PolicyInfo>,
@@ -183,7 +208,7 @@ pub struct PolicyInfo {
     pub block_reason: Option<String>,
     pub redactions_applied: usize,
     pub processing_time_ms: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub matched_policies: Vec<PolicyMatchInfo>,
 }
 
@@ -196,32 +221,41 @@ pub struct PolicyMatchInfo {
     pub action: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PlanStep {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default, rename = "type")]
     pub r#type: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default, deserialize_with = "null_to_default")]
     pub dependencies: Vec<String>,
+    #[serde(default)]
     pub agent: String,
+    #[serde(default, deserialize_with = "null_to_default")]
     pub parameters: HashMap<String, serde_json::Value>,
+    #[serde(default)]
     pub estimated_time: String,
 }
 
 #[must_use]
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct PlanResponse {
     pub plan_id: String,
     pub status: String,
+    #[serde(deserialize_with = "null_to_default")]
     pub steps: Vec<PlanStep>,
     pub domain: String,
     pub complexity: i32,
     pub parallel: bool,
     pub estimated_duration: String,
+    #[serde(deserialize_with = "null_to_default")]
     pub metadata: HashMap<String, serde_json::Value>,
-    #[serde(default)]
     pub success: bool,
-    #[serde(default)]
     pub version: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
@@ -229,7 +263,8 @@ pub struct PlanResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct StepResult {
     pub step_id: String,
     pub step_name: String,
@@ -242,7 +277,8 @@ pub struct StepResult {
 }
 
 #[must_use]
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct PlanExecutionResponse {
     pub plan_id: String,
     pub status: String,
@@ -250,7 +286,7 @@ pub struct PlanExecutionResponse {
     pub workflow_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "null_to_default")]
     pub step_results: Vec<StepResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -259,11 +295,11 @@ pub struct PlanExecutionResponse {
     pub total_steps: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct CancelPlanResponse {
     pub plan_id: String,
     pub status: String,
-    #[serde(default)]
     pub success: bool,
 }
 
@@ -276,6 +312,6 @@ pub struct CodeArtifact {
     pub line_count: usize,
     pub secrets_detected: usize,
     pub unsafe_patterns: usize,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub policies_checked: Vec<String>,
 }
