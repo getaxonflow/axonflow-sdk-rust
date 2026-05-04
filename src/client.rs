@@ -242,18 +242,26 @@ impl AxonFlowClient {
         query: &str,
         params: HashMap<String, serde_json::Value>,
     ) -> Result<crate::types::agent::ConnectorResponse, AxonFlowError> {
-        let req_body = serde_json::json!({
-            "user_token": user_token,
-            "connector": connector_name,
-            "query": query,
-            "params": params,
-            "client_id": self.get_effective_client_id(),
-        });
+        // Connector queries are dispatched through the agent's proxy endpoint
+        // with request_type=mcp-query — there is no standalone /api/v1/query.
+        // Mirror the Go SDK's QueryConnector contract.
+        let mut context = HashMap::new();
+        context.insert("connector".to_string(), serde_json::json!(connector_name));
+        context.insert("params".to_string(), serde_json::json!(params));
 
-        let url = format!("{}/api/v1/query", self.config.endpoint);
-        let resp = self.http_client.post(&url).json(&req_body).send().await?;
-        let resp = Self::check_status(resp).await?;
-        Ok(resp.json().await?)
+        let resp = self
+            .proxy_llm_call(user_token, query, "mcp-query", context)
+            .await?;
+
+        Ok(crate::types::agent::ConnectorResponse {
+            success: resp.success,
+            data: resp.data.unwrap_or(serde_json::Value::Null),
+            error: resp.error,
+            meta: resp.metadata,
+            redacted: false,
+            redacted_fields: Vec::new(),
+            policy_info: None,
+        })
     }
 
     // ============================================================================
