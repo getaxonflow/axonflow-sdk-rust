@@ -45,6 +45,7 @@ pub struct AxonFlowConfig {
     pub endpoint: String,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    pub license_key: Option<String>,
     pub mode: Mode,
     pub debug: bool,
     pub timeout: Duration,
@@ -63,6 +64,10 @@ impl fmt::Debug for AxonFlowConfig {
                 "client_secret",
                 &self.client_secret.as_ref().map(|_| "[REDACTED]"),
             )
+            .field(
+                "license_key",
+                &self.license_key.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("mode", &self.mode)
             .field("debug", &self.debug)
             .field("timeout", &self.timeout)
@@ -80,6 +85,7 @@ impl Default for AxonFlowConfig {
             endpoint: String::new(),
             client_id: None,
             client_secret: None,
+            license_key: None,
             mode: Mode::default(),
             debug: false,
             timeout: Duration::from_secs(60),
@@ -106,6 +112,11 @@ impl AxonFlowConfig {
     ) -> Self {
         self.client_id = Some(client_id.into());
         self.client_secret = Some(client_secret.into());
+        self
+    }
+
+    pub fn with_license_key(mut self, license_key: impl Into<String>) -> Self {
+        self.license_key = Some(license_key.into());
         self
     }
 
