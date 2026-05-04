@@ -15,7 +15,10 @@ pub fn maybe_send_heartbeat(endpoint: &str) {
                 if let Ok(modified) = metadata.modified() {
                     if let Ok(elapsed) = SystemTime::now().duration_since(modified) {
                         if elapsed < HEARTBEAT_INTERVAL {
-                            debug!("Telemetry heartbeat is still fresh ({}s elapsed)", elapsed.as_secs());
+                            debug!(
+                                "Telemetry heartbeat is still fresh ({}s elapsed)",
+                                elapsed.as_secs()
+                            );
                             return;
                         }
                     }
@@ -67,7 +70,10 @@ async fn send_heartbeat(endpoint: &str, stamp_path: PathBuf) {
                 if let Some(parent) = stamp_path.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
-                let _ = fs::write(&stamp_path, format!("last_sent={}", chrono::Utc::now().to_rfc3339()));
+                let _ = fs::write(
+                    &stamp_path,
+                    format!("last_sent={}", chrono::Utc::now().to_rfc3339()),
+                );
             }
             Ok(resp) => debug!("Telemetry heartbeat rejected by server: {}", resp.status()),
             Err(e) => debug!("Telemetry heartbeat failed: {}", e),

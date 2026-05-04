@@ -4,17 +4,15 @@ use std::collections::HashMap;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration from environment variables
-    let agent_url = std::env::var("AXONFLOW_AGENT_URL")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let client_id = std::env::var("AXONFLOW_CLIENT_ID")
-        .expect("AXONFLOW_CLIENT_ID must be set");
-    let client_secret = std::env::var("AXONFLOW_CLIENT_SECRET")
-        .expect("AXONFLOW_CLIENT_SECRET must be set");
+    let agent_url =
+        std::env::var("AXONFLOW_AGENT_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let client_id = std::env::var("AXONFLOW_CLIENT_ID").expect("AXONFLOW_CLIENT_ID must be set");
+    let client_secret =
+        std::env::var("AXONFLOW_CLIENT_SECRET").expect("AXONFLOW_CLIENT_SECRET must be set");
 
     // Initialize client
     println!("Initializing AxonFlow client...");
-    let config = AxonFlowConfig::new(agent_url)
-        .with_auth(client_id, client_secret);
+    let config = AxonFlowConfig::new(agent_url).with_auth(client_id, client_secret);
     let client = AxonFlowClient::new(config)?;
 
     // Execute a simple query
@@ -23,12 +21,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     context.insert("temperature".to_string(), serde_json::json!(0.7));
     context.insert("max_tokens".to_string(), serde_json::json!(100));
 
-    let resp = client.proxy_llm_call(
-        "", // SDK auto-populates user_token (defaults to "anonymous")
-        "What is the capital of France?",
-        "chat",
-        context,
-    ).await?;
+    let resp = client
+        .proxy_llm_call(
+            "", // SDK auto-populates user_token (defaults to "anonymous")
+            "What is the capital of France?",
+            "chat",
+            context,
+        )
+        .await?;
 
     // Check if request was blocked
     if resp.blocked {
@@ -63,12 +63,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Testing PII detection and redaction...");
     println!("{}", "=".repeat(60));
 
-    let resp2 = client.proxy_llm_call(
-        "",
-        "My email is john.doe@example.com and my SSN is 123-45-6789",
-        "chat",
-        HashMap::new(),
-    ).await?;
+    let resp2 = client
+        .proxy_llm_call(
+            "",
+            "My email is john.doe@example.com and my SSN is 123-45-6789",
+            "chat",
+            HashMap::new(),
+        )
+        .await?;
 
     if resp2.blocked {
         println!("✓ PII detected and request blocked");

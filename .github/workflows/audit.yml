@@ -1,0 +1,30 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Tuesday 06:00 UTC — failures land in EU/IN working hours.
+    - cron: '0 6 * * 2'
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  AXONFLOW_TELEMETRY: 'off'
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

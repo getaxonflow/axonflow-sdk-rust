@@ -1,16 +1,14 @@
-use axonflow_sdk_rust::{
-    AxonFlowClient, AxonFlowConfig, Mode, RetryConfig, CacheConfig,
-};
-use axonflow_sdk_rust::interceptors::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, OpenAIChatCompleter,
-    Usage, WrappedOpenAIClient,
-};
 use async_trait::async_trait;
+use axonflow_sdk_rust::interceptors::openai::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, OpenAIChatCompleter, Usage,
+    WrappedOpenAIClient,
+};
+use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, CacheConfig, Mode, RetryConfig};
 use httpmock::prelude::*;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 struct MockOpenAI {
@@ -57,7 +55,8 @@ async fn test_openai_interceptor() {
     // 2. Audit mock (optional, happens in background)
     let audit_mock = server.mock(|when, then| {
         when.method(POST).path("/api/audit/llm-call");
-        then.status(200).json_body(json!({"success": true, "audit_id": "audit-123"}));
+        then.status(200)
+            .json_body(json!({"success": true, "audit_id": "audit-123"}));
     });
 
     let config = AxonFlowConfig {
@@ -67,13 +66,18 @@ async fn test_openai_interceptor() {
     let client = AxonFlowClient::new(config).unwrap();
 
     let openai_calls = Arc::new(AtomicUsize::new(0));
-    let raw_openai = MockOpenAI { calls: Arc::clone(&openai_calls) };
-    
+    let raw_openai = MockOpenAI {
+        calls: Arc::clone(&openai_calls),
+    };
+
     let wrapped = WrappedOpenAIClient::new(raw_openai, client, "user-123");
 
     let req = ChatCompletionRequest {
         model: "gpt-4".to_string(),
-        messages: vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }],
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }],
         temperature: None,
         max_tokens: None,
     };
@@ -82,9 +86,9 @@ async fn test_openai_interceptor() {
 
     assert_eq!(resp.id, "openai-123");
     assert_eq!(openai_calls.load(Ordering::SeqCst), 1);
-    
+
     axon_mock.assert();
-    
+
     // Give background audit a moment to fire
     tokio::time::sleep(Duration::from_millis(100)).await;
     audit_mock.assert();
@@ -95,15 +99,13 @@ async fn test_proxy_llm_call_success() {
     let server = MockServer::start();
 
     let mock = server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/request")
-            .json_body(json!({
-                "query": "test query",
-                "user_token": "user-123",
-                "client_id": "test-client",
-                "request_type": "chat",
-                "context": {}
-            }));
+        when.method(POST).path("/api/request").json_body(json!({
+            "query": "test query",
+            "user_token": "user-123",
+            "client_id": "test-client",
+            "request_type": "chat",
+            "context": {}
+        }));
         then.status(200)
             .header("content-type", "application/json")
             .json_body(json!({
@@ -116,12 +118,18 @@ async fn test_proxy_llm_call_success() {
     let config = AxonFlowConfig {
         endpoint: server.url(""),
         client_id: Some("test-client".to_string()),
-        cache: CacheConfig { enabled: false, ..Default::default() },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
 
-    let resp = client.proxy_llm_call("user-123", "test query", "chat", HashMap::new()).await.unwrap();
+    let resp = client
+        .proxy_llm_call("user-123", "test query", "chat", HashMap::new())
+        .await
+        .unwrap();
 
     assert!(resp.success);
     assert_eq!(resp.result.unwrap(), "Test result");
@@ -146,12 +154,18 @@ async fn test_proxy_llm_call_blocked() {
 
     let config = AxonFlowConfig {
         endpoint: server.url(""),
-        cache: CacheConfig { enabled: false, ..Default::default() },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
 
-    let resp = client.proxy_llm_call("user-123", "bad query", "chat", HashMap::new()).await.unwrap();
+    let resp = client
+        .proxy_llm_call("user-123", "bad query", "chat", HashMap::new())
+        .await
+        .unwrap();
 
     assert!(!resp.success);
     assert!(resp.blocked);
@@ -170,16 +184,29 @@ async fn test_proxy_llm_call_fail_open() {
     let config = AxonFlowConfig {
         endpoint: server.url(""),
         mode: Mode::Production,
-        retry: RetryConfig { enabled: true, max_attempts: 1, ..Default::default() },
-        cache: CacheConfig { enabled: false, ..Default::default() },
+        retry: RetryConfig {
+            enabled: true,
+            max_attempts: 1,
+            ..Default::default()
+        },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
 
-    let resp = client.proxy_llm_call("user", "query", "chat", HashMap::new()).await.unwrap();
+    let resp = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
 
     assert!(resp.success);
-    assert!(resp.error.unwrap().contains("AxonFlow unavailable (fail-open)"));
+    assert!(resp
+        .error
+        .unwrap()
+        .contains("AxonFlow unavailable (fail-open)"));
 }
 
 #[tokio::test]
@@ -198,15 +225,24 @@ async fn test_caching() {
 
     let config = AxonFlowConfig {
         endpoint: server.url(""),
-        cache: CacheConfig { enabled: true, ttl: Duration::from_secs(60) },
+        cache: CacheConfig {
+            enabled: true,
+            ttl: Duration::from_secs(60),
+        },
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
 
     // First call
-    let _ = client.proxy_llm_call("user", "query", "chat", HashMap::new()).await.unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
     // Second call (should hit cache)
-    let _ = client.proxy_llm_call("user", "query", "chat", HashMap::new()).await.unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
 
     mock.assert_hits(1);
 }
@@ -227,14 +263,23 @@ async fn test_mutation_bypass_cache() {
 
     let config = AxonFlowConfig {
         endpoint: server.url(""),
-        cache: CacheConfig { enabled: true, ttl: Duration::from_secs(60) },
+        cache: CacheConfig {
+            enabled: true,
+            ttl: Duration::from_secs(60),
+        },
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
 
     // Mutations should never be cached
-    let _ = client.proxy_llm_call("user", "query", "execute-plan", HashMap::new()).await.unwrap();
-    let _ = client.proxy_llm_call("user", "query", "execute-plan", HashMap::new()).await.unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "execute-plan", HashMap::new())
+        .await
+        .unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "execute-plan", HashMap::new())
+        .await
+        .unwrap();
 
     mock.assert_hits(2);
 }
@@ -256,12 +301,17 @@ async fn test_retry_logic() {
             max_attempts: 2,
             initial_delay: Duration::from_millis(1),
         },
-        cache: CacheConfig { enabled: false, ..Default::default() },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
 
-    let result = client.proxy_llm_call("user", "query", "chat", HashMap::new()).await;
+    let result = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await;
 
     assert!(result.is_err());
 }
@@ -336,7 +386,10 @@ async fn test_generate_plan() {
     };
     let client = AxonFlowClient::new(config).unwrap();
 
-    let plan = client.generate_plan("do something", "it", None).await.unwrap();
+    let plan = client
+        .generate_plan("do something", "it", None)
+        .await
+        .unwrap();
 
     assert_eq!(plan.plan_id, "plan-999");
     assert_eq!(plan.domain, "it");
