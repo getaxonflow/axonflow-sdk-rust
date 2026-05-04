@@ -4,6 +4,7 @@ use axonflow_sdk_rust::interceptors::openai::{
     WrappedOpenAIClient,
 };
 use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, CacheConfig, Mode, RetryConfig};
+use base64::Engine as _;
 use httpmock::prelude::*;
 use serde_json::json;
 use std::collections::HashMap;
@@ -393,4 +394,250 @@ async fn test_generate_plan() {
 
     assert_eq!(plan.plan_id, "plan-999");
     assert_eq!(plan.domain, "it");
+}
+
+// ============================================================================
+// Auth header tests — see axonflow-sdk-go selfhosted_auth_headers_test.go
+// ============================================================================
+
+#[tokio::test]
+async fn test_auth_defaults_to_community() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/request")
+            .header("authorization", "Basic Y29tbXVuaXR5Og=="); // base64("community:")
+        then.status(200).json_body(json!({
+            "success": true,
+            "result": "ok"
+        }));
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
+    mock.assert();
+}
+
+#[tokio::test]
+async fn test_auth_basic_with_credentials() {
+    let server = MockServer::start();
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(b"my-client:my-secret".as_slice())
+    );
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/request")
+            .header("authorization", &expected);
+        then.status(200).json_body(json!({
+            "success": true,
+            "result": "ok"
+        }));
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        client_id: Some("my-client".to_string()),
+        client_secret: Some("my-secret".to_string()),
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
+    mock.assert();
+}
+
+#[tokio::test]
+async fn test_auth_clientid_only_empty_secret() {
+    let server = MockServer::start();
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(b"my-client:".as_slice())
+    );
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/request")
+            .header("authorization", &expected);
+        then.status(200).json_body(json!({
+            "success": true,
+            "result": "ok"
+        }));
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        client_id: Some("my-client".to_string()),
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
+    mock.assert();
+}
+
+#[tokio::test]
+async fn test_license_key_header_when_set() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/request")
+            .header("x-license-key", "test-license-abc-123");
+        then.status(200).json_body(json!({
+            "success": true,
+            "result": "ok"
+        }));
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        client_id: Some("my-client".to_string()),
+        client_secret: Some("my-secret".to_string()),
+        license_key: Some("test-license-abc-123".to_string()),
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
+    mock.assert();
+}
+
+#[tokio::test]
+async fn test_no_license_key_header_when_unset() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/api/request").matches(|req| {
+            !req.headers
+                .as_ref()
+                .map(|hs| {
+                    hs.iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("x-license-key"))
+                })
+                .unwrap_or(false)
+        });
+        then.status(200).json_body(json!({
+            "success": true,
+            "result": "ok"
+        }));
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+    let _ = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await
+        .unwrap();
+    mock.assert();
+}
+
+// ============================================================================
+// Endpoint path tests — verify Phase 0 corrections
+// ============================================================================
+
+#[tokio::test]
+async fn test_install_connector_uses_install_subpath() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/v1/connectors/postgres/install");
+        then.status(204);
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+
+    let req = axonflow_sdk_rust::ConnectorInstallRequest {
+        connector_id: "postgres".to_string(),
+        name: "pg-prod".to_string(),
+        tenant_id: "demo".to_string(),
+        options: HashMap::new(),
+        credentials: HashMap::new(),
+    };
+    client.install_connector(req).await.unwrap();
+    mock.assert();
+}
+
+#[tokio::test]
+async fn test_get_plan_status_uses_singular_path() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/api/v1/plan/plan42");
+        then.status(200).json_body(json!({
+            "plan_id": "plan42",
+            "status": "completed",
+            "duration": "1s",
+            "completed_steps": 1,
+            "total_steps": 1
+        }));
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+    let resp = client.get_plan_status("plan42").await.unwrap();
+    assert_eq!(resp.plan_id, "plan42");
+    mock.assert();
+}
+
+#[tokio::test]
+async fn test_cancel_plan_uses_singular_path() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/api/v1/plan/plan42/cancel");
+        then.status(200).json_body(json!({
+            "plan_id": "plan42",
+            "status": "cancelled",
+            "success": true
+        }));
+    });
+
+    let config = AxonFlowConfig {
+        endpoint: server.url(""),
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+    let resp = client.cancel_plan("plan42", Some("test")).await.unwrap();
+    assert_eq!(resp.plan_id, "plan42");
+    assert!(resp.success);
+    mock.assert();
 }

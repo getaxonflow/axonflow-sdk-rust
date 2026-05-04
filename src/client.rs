@@ -2,13 +2,17 @@ use crate::config::{AxonFlowConfig, Mode};
 use crate::error::AxonFlowError;
 use crate::heartbeat::maybe_send_heartbeat;
 use crate::types::agent::{ClientRequest, ClientResponse};
+use base64::engine::general_purpose::STANDARD as BASE64_STD;
+use base64::Engine as _;
 use moka::future::Cache;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
+
+const LICENSE_KEY_HEADER: &str = "X-License-Key";
 
 #[derive(Clone)]
 pub struct AxonFlowClient {
@@ -46,14 +50,25 @@ impl AxonFlowClient {
             HeaderValue::from_static(concat!("axonflow-sdk-rust/", env!("CARGO_PKG_VERSION"))),
         );
 
-        if let Some(client_id) = &config.client_id {
-            if let Ok(val) = HeaderValue::from_str(client_id) {
-                headers.insert("X-AxonFlow-Client-ID", val);
-            }
+        // HTTP Basic auth: "Basic base64(client_id:client_secret)".
+        // When neither is configured, default to the community tenant —
+        // matches the cross-SDK contract (see axonflow-sdk-go selfhosted_auth_headers_test.go).
+        let basic_id = config
+            .client_id
+            .clone()
+            .unwrap_or_else(|| "community".to_string());
+        let basic_secret = config.client_secret.clone().unwrap_or_default();
+        let basic_credentials = BASE64_STD.encode(format!("{}:{}", basic_id, basic_secret));
+        let basic_value = format!("Basic {}", basic_credentials);
+        if let Ok(val) = HeaderValue::from_str(&basic_value) {
+            headers.insert(AUTHORIZATION, val);
         }
-        if let Some(client_secret) = &config.client_secret {
-            if let Ok(val) = HeaderValue::from_str(client_secret) {
-                headers.insert("X-AxonFlow-Client-Secret", val);
+
+        // Enterprise license key — sent only when configured.
+        if let Some(license_key) = &config.license_key {
+            if let Ok(mut val) = HeaderValue::from_str(license_key) {
+                val.set_sensitive(true);
+                headers.insert(LICENSE_KEY_HEADER, val);
             }
         }
 
@@ -210,7 +225,11 @@ impl AxonFlowClient {
         &self,
         req: crate::types::agent::ConnectorInstallRequest,
     ) -> Result<(), AxonFlowError> {
-        let url = format!("{}/api/v1/connectors", self.config.endpoint);
+        let encoded_id = utf8_percent_encode(&req.connector_id, NON_ALPHANUMERIC);
+        let url = format!(
+            "{}/api/v1/connectors/{}/install",
+            self.config.endpoint, encoded_id
+        );
         let resp = self.http_client.post(&url).json(&req).send().await?;
         Self::check_status(resp).await?;
         Ok(())
@@ -295,10 +314,7 @@ impl AxonFlowClient {
         plan_id: &str,
     ) -> Result<crate::types::agent::PlanExecutionResponse, AxonFlowError> {
         let encoded_id = utf8_percent_encode(plan_id, NON_ALPHANUMERIC);
-        let url = format!(
-            "{}/api/v1/plans/{}/status",
-            self.config.endpoint, encoded_id
-        );
+        let url = format!("{}/api/v1/plan/{}", self.config.endpoint, encoded_id);
         let resp = self.checked_map_get(&url).await?;
         Ok(resp.json().await?)
     }
@@ -313,10 +329,7 @@ impl AxonFlowClient {
         });
 
         let encoded_id = utf8_percent_encode(plan_id, NON_ALPHANUMERIC);
-        let url = format!(
-            "{}/api/v1/plans/{}/cancel",
-            self.config.endpoint, encoded_id
-        );
+        let url = format!("{}/api/v1/plan/{}/cancel", self.config.endpoint, encoded_id);
         let resp = self
             .map_http_client
             .post(&url)

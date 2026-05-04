@@ -1,10 +1,14 @@
 [package]
 name = "axonflow-sdk-rust"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Enterprise-grade Rust SDK for the AxonFlow AI governance platform"
+rust-version = "1.78"
+description = "Rust SDK for the AxonFlow AI governance platform"
 license = "MIT"
-repository = "https://github.com/axonflow/axonflow-sdk-rust"
+repository = "https://github.com/getaxonflow/axonflow-sdk-rust"
+homepage = "https://getaxonflow.com"
+documentation = "https://docs.rs/axonflow-sdk-rust"
+readme = "README.md"
 keywords = ["ai", "governance", "llm", "sdk"]
 categories = ["api-bindings", "web-programming::http-client"]
 
@@ -20,6 +24,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 home = "0.5"
 percent-encoding = "2.3"
+base64 = "0.22"
 
 [dev-dependencies]
 httpmock = "0.7"

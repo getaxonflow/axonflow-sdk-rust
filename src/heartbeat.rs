@@ -10,6 +10,18 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7
 
 pub fn maybe_send_heartbeat(endpoint: &str) {
     HEARTBEAT_ONCE.call_once(|| {
+        // AXONFLOW_TELEMETRY=off is the documented opt-out across all
+        // AxonFlow SDKs. DO_NOT_TRACK is intentionally NOT honored — it is
+        // commonly inherited from a parent shell and would silently disable
+        // SDK telemetry without an explicit AxonFlow-scoped opt-in.
+        if std::env::var("AXONFLOW_TELEMETRY")
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("off")
+        {
+            debug!("Telemetry disabled via AXONFLOW_TELEMETRY=off");
+            return;
+        }
+
         if let Some(stamp_path) = resolve_stamp_path() {
             if let Ok(metadata) = fs::metadata(&stamp_path) {
                 if let Ok(modified) = metadata.modified() {
