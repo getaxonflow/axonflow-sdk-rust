@@ -1,0 +1,118 @@
+name: Integration Tests
+
+# Brings up the AxonFlow community stack via docker compose, runs every example
+# end-to-end against it, and asserts each one finishes cleanly. Mirrors the
+# axonflow-sdk-go integration.yml pattern — keeps the Rust SDK from regressing
+# against the platform's wire contract.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Tuesday 06:00 UTC — failures land in EU/IN working hours, not weekend
+    # handover. Aligns with the other SDKs' integration cadence.
+    - cron: '0 6 * * 2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AXONFLOW_TELEMETRY: 'off'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  integration:
+    name: Examples vs community stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Skip on PRs from forks: the community repo clone uses an anonymous
+    # public clone (no token needed), but if anything in the future relies
+    # on a token, this guard keeps fork PRs from silently failing.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout SDK
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clone Community Stack
+        run: |
+          git clone --depth 1 https://github.com/getaxonflow/axonflow.git ../axonflow
+
+      - name: Start Community Stack
+        run: |
+          cd ../axonflow
+          docker compose up -d --wait --wait-timeout 180
+
+          echo "Waiting for agent to be healthy…"
+          timeout 120 bash -c 'until curl -sf http://localhost:8080/health; do sleep 2; done'
+          echo "Agent is healthy"
+
+          timeout 60 bash -c 'until curl -sf http://localhost:8081/health; do sleep 2; done'
+          echo "Orchestrator is healthy"
+
+      - name: Run integration test (basic)
+        env:
+          AXONFLOW_AGENT_URL: http://localhost:8080
+          AXONFLOW_CLIENT_ID: demo-client
+          AXONFLOW_CLIENT_SECRET: demo-secret
+        run: timeout 60 cargo run --example basic
+
+      - name: Run integration test (connectors)
+        env:
+          AXONFLOW_AGENT_URL: http://localhost:8080
+          AXONFLOW_CLIENT_ID: demo-client
+          AXONFLOW_CLIENT_SECRET: demo-secret
+        run: timeout 60 cargo run --example connectors
+
+      - name: Run integration test (planning)
+        env:
+          AXONFLOW_AGENT_URL: http://localhost:8080
+          AXONFLOW_CLIENT_ID: demo-client
+          AXONFLOW_CLIENT_SECRET: demo-secret
+        run: timeout 120 cargo run --example planning
+
+      - name: Run integration test (interceptors)
+        env:
+          AXONFLOW_AGENT_URL: http://localhost:8080
+          AXONFLOW_CLIENT_ID: demo-client
+          AXONFLOW_CLIENT_SECRET: demo-secret
+        run: timeout 60 cargo run --example interceptors
+
+      # Logs MUST be captured before `Stop Community Stack` runs — `compose
+      # down` destroys the containers and `compose logs` then returns nothing.
+      - name: Show Docker Logs on Failure
+        if: failure()
+        run: |
+          if [ -d "../axonflow" ]; then
+            cd ../axonflow
+            docker compose logs --tail=200 || true
+          fi
+
+      - name: Upload Docker Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-logs
+          path: ../axonflow/docker-compose-logs.txt
+          if-no-files-found: ignore
+
+      - name: Stop Community Stack
+        if: always()
+        run: |
+          if [ -d "../axonflow" ]; then
+            cd ../axonflow
+            docker compose logs --tail=500 > docker-compose-logs.txt 2>/dev/null || true
+            docker compose down --volumes --remove-orphans || true
+          fi
