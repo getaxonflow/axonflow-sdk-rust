@@ -97,3 +97,44 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish to crates.io. Mirrors the PyPI / npm / Maven Central publish-on-tag
+  # pattern from the established four SDKs. Requires CARGO_REGISTRY_TOKEN repo
+  # secret (https://crates.io/me — generate a publish token, save as a secret).
+  #
+  # Runs AFTER the GitHub release is created, so a transient crates.io failure
+  # does not erase the GH release. If publish fails, fix the underlying issue
+  # and run `cargo publish` locally one time, OR cut a patch tag (vX.Y.Z+1).
+  publish-cratesio:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify CARGO_REGISTRY_TOKEN secret is configured
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN secret is not set."
+            echo "::error::Generate a publish token at https://crates.io/me and add it as a repo secret."
+            exit 1
+          fi
+
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
+
+      - name: Wait for crates.io propagation
+        run: sleep 30
+
+      - name: Verify version is live on crates.io
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          curl -sf "https://crates.io/api/v1/crates/axonflow-sdk-rust/${VERSION}" > /dev/null \
+            || { echo "::error::axonflow-sdk-rust@${VERSION} not found on crates.io after publish."; exit 1; }
+          echo "✅ axonflow-sdk-rust@${VERSION} is live on crates.io"
