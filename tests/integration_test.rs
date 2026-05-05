@@ -5,12 +5,13 @@ use axonflow_sdk_rust::interceptors::openai::{
 };
 use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, CacheConfig, Mode, RetryConfig};
 use base64::Engine as _;
-use httpmock::prelude::*;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 struct MockOpenAI {
     calls: Arc<AtomicUsize>,
@@ -40,28 +41,36 @@ impl OpenAIChatCompleter for MockOpenAI {
 
 #[tokio::test]
 async fn test_openai_interceptor() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
     // 1. AxonFlow request mock
-    let axon_mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request");
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(json!({
-                "success": true,
-                "request_id": "axon-req-123"
-            }));
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": true,
+                    "request_id": "axon-req-123"
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
 
     // 2. Audit mock (optional, happens in background)
-    let audit_mock = server.mock(|when, then| {
-        when.method(POST).path("/api/audit/llm-call");
-        then.status(200)
-            .json_body(json!({"success": true, "audit_id": "audit-123"}));
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/audit/llm-call"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"success": true, "audit_id": "audit-123"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
@@ -88,36 +97,38 @@ async fn test_openai_interceptor() {
     assert_eq!(resp.id, "openai-123");
     assert_eq!(openai_calls.load(Ordering::SeqCst), 1);
 
-    axon_mock.assert();
-
     // Give background audit a moment to fire
     tokio::time::sleep(Duration::from_millis(100)).await;
-    audit_mock.assert();
 }
 
 #[tokio::test]
 async fn test_proxy_llm_call_success() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request").json_body(json!({
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .and(wiremock::matchers::body_json(json!({
             "query": "test query",
             "user_token": "user-123",
             "client_id": "test-client",
             "request_type": "chat",
             "context": {}
-        }));
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(json!({
-                "success": true,
-                "result": "Test result",
-                "request_id": "req-123"
-            }));
-    });
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": true,
+                    "result": "Test result",
+                    "request_id": "req-123"
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         client_id: Some("test-client".to_string()),
         cache: CacheConfig {
             enabled: false,
@@ -135,26 +146,29 @@ async fn test_proxy_llm_call_success() {
     assert!(resp.success);
     assert_eq!(resp.result.unwrap(), "Test result");
     assert_eq!(resp.request_id.unwrap(), "req-123");
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_proxy_llm_call_blocked() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let _mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request");
-        then.status(403) // Policy violation
-            .header("content-type", "application/json")
-            .json_body(json!({
-                "success": false,
-                "blocked": true,
-                "block_reason": "PII detected"
-            }));
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(403) // Policy violation
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": false,
+                    "blocked": true,
+                    "block_reason": "PII detected"
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         cache: CacheConfig {
             enabled: false,
             ..Default::default()
@@ -175,15 +189,16 @@ async fn test_proxy_llm_call_blocked() {
 
 #[tokio::test]
 async fn test_proxy_llm_call_fail_open() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let _mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request");
-        then.status(503);
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         mode: Mode::Production,
         retry: RetryConfig {
             enabled: true,
@@ -212,20 +227,24 @@ async fn test_proxy_llm_call_fail_open() {
 
 #[tokio::test]
 async fn test_caching() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request");
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(json!({
-                "success": true,
-                "result": "cached"
-            }));
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": true,
+                    "result": "cached"
+                })),
+        )
+        .expect(1) // Should only be called once
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         cache: CacheConfig {
             enabled: true,
             ttl: Duration::from_secs(60),
@@ -244,26 +263,28 @@ async fn test_caching() {
         .proxy_llm_call("user", "query", "chat", HashMap::new())
         .await
         .unwrap();
-
-    mock.assert_hits(1);
 }
 
 #[tokio::test]
 async fn test_mutation_bypass_cache() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request");
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(json!({
-                "success": true,
-                "result": "mutation"
-            }));
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": true,
+                    "result": "mutation"
+                })),
+        )
+        .expect(2) // Mutations should never be cached
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         cache: CacheConfig {
             enabled: true,
             ttl: Duration::from_secs(60),
@@ -281,21 +302,21 @@ async fn test_mutation_bypass_cache() {
         .proxy_llm_call("user", "query", "execute-plan", HashMap::new())
         .await
         .unwrap();
-
-    mock.assert_hits(2);
 }
 
 #[tokio::test]
 async fn test_retry_logic() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let _mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request");
-        then.status(500);
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(2)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         mode: Mode::Sandbox, // Disable fail-open to see the error
         retry: RetryConfig {
             enabled: true,
@@ -319,34 +340,38 @@ async fn test_retry_logic() {
 
 #[tokio::test]
 async fn test_list_connectors() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let mock = server.mock(|when, then| {
-        when.method(GET).path("/api/v1/connectors");
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(json!({
-                "connectors": [
-                    {
-                        "id": "conn-1",
-                        "name": "Postgres",
-                        "type": "database",
-                        "version": "1.0",
-                        "description": "desc",
-                        "category": "db",
-                        "icon": "icon",
-                        "tags": [],
-                        "capabilities": [],
-                        "config_schema": {},
-                        "installed": true
-                    }
-                ],
-                "total": 1
-            }));
-    });
+    Mock::given(method("GET"))
+        .and(path("/api/v1/connectors"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "connectors": [
+                        {
+                            "id": "conn-1",
+                            "name": "Postgres",
+                            "type": "database",
+                            "version": "1.0",
+                            "description": "desc",
+                            "category": "db",
+                            "icon": "icon",
+                            "tags": [],
+                            "capabilities": [],
+                            "config_schema": {},
+                            "installed": true
+                        }
+                    ],
+                    "total": 1
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
@@ -355,34 +380,37 @@ async fn test_list_connectors() {
 
     assert_eq!(connectors.len(), 1);
     assert_eq!(connectors[0].name, "Postgres");
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_generate_plan() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
 
-    let _mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request");
-        then.status(200)
-            .header("content-type", "application/json")
-            .json_body(json!({
-                "success": true,
-                "data": {
-                    "plan_id": "plan-999",
-                    "status": "pending",
-                    "steps": [],
-                    "domain": "it",
-                    "complexity": 5,
-                    "parallel": false,
-                    "estimated_duration": "10s",
-                    "metadata": {}
-                }
-            }));
-    });
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": true,
+                    "data": {
+                        "plan_id": "plan-999",
+                        "status": "pending",
+                        "steps": [],
+                        "domain": "it",
+                        "complexity": 5,
+                        "parallel": false,
+                        "estimated_duration": "10s",
+                        "metadata": {}
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
@@ -402,19 +430,20 @@ async fn test_generate_plan() {
 
 #[tokio::test]
 async fn test_auth_defaults_to_community() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/request")
-            .header("authorization", "Basic Y29tbXVuaXR5Og=="); // base64("community:")
-        then.status(200).json_body(json!({
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .and(header("authorization", "Basic Y29tbXVuaXR5Og==")) // base64("community:")
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "success": true,
             "result": "ok"
-        }));
-    });
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         cache: CacheConfig {
             enabled: false,
             ..Default::default()
@@ -426,28 +455,28 @@ async fn test_auth_defaults_to_community() {
         .proxy_llm_call("user", "query", "chat", HashMap::new())
         .await
         .unwrap();
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_auth_basic_with_credentials() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
     let expected = format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(b"my-client:my-secret".as_slice())
     );
-    let mock = server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/request")
-            .header("authorization", &expected);
-        then.status(200).json_body(json!({
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .and(header("authorization", &expected))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "success": true,
             "result": "ok"
-        }));
-    });
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         client_id: Some("my-client".to_string()),
         client_secret: Some("my-secret".to_string()),
         cache: CacheConfig {
@@ -461,28 +490,28 @@ async fn test_auth_basic_with_credentials() {
         .proxy_llm_call("user", "query", "chat", HashMap::new())
         .await
         .unwrap();
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_auth_clientid_only_empty_secret() {
-    let server = MockServer::start();
+    let server = MockServer::start().await;
     let expected = format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(b"my-client:".as_slice())
     );
-    let mock = server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/request")
-            .header("authorization", &expected);
-        then.status(200).json_body(json!({
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .and(header("authorization", &expected))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "success": true,
             "result": "ok"
-        }));
-    });
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         client_id: Some("my-client".to_string()),
         cache: CacheConfig {
             enabled: false,
@@ -495,24 +524,24 @@ async fn test_auth_clientid_only_empty_secret() {
         .proxy_llm_call("user", "query", "chat", HashMap::new())
         .await
         .unwrap();
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_license_key_header_when_set() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/request")
-            .header("x-license-key", "test-license-abc-123");
-        then.status(200).json_body(json!({
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .and(header("x-license-key", "test-license-abc-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "success": true,
             "result": "ok"
-        }));
-    });
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         client_id: Some("my-client".to_string()),
         client_secret: Some("my-secret".to_string()),
         license_key: Some("test-license-abc-123".to_string()),
@@ -527,30 +556,29 @@ async fn test_license_key_header_when_set() {
         .proxy_llm_call("user", "query", "chat", HashMap::new())
         .await
         .unwrap();
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_no_license_key_header_when_unset() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/api/request").matches(|req| {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .and(move |req: &wiremock::Request| {
             !req.headers
-                .as_ref()
-                .map(|hs| {
-                    hs.iter()
-                        .any(|(k, _)| k.eq_ignore_ascii_case("x-license-key"))
-                })
-                .unwrap_or(false)
-        });
-        then.status(200).json_body(json!({
+                .iter()
+                .any(|(k, _)| k.as_str().eq_ignore_ascii_case("x-license-key"))
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "success": true,
             "result": "ok"
-        }));
-    });
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         cache: CacheConfig {
             enabled: false,
             ..Default::default()
@@ -562,7 +590,6 @@ async fn test_no_license_key_header_when_unset() {
         .proxy_llm_call("user", "query", "chat", HashMap::new())
         .await
         .unwrap();
-    mock.assert();
 }
 
 // ============================================================================
@@ -571,15 +598,16 @@ async fn test_no_license_key_header_when_unset() {
 
 #[tokio::test]
 async fn test_install_connector_uses_install_subpath() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST)
-            .path("/api/v1/connectors/postgres/install");
-        then.status(204);
-    });
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/connectors/postgres/install"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
@@ -592,52 +620,53 @@ async fn test_install_connector_uses_install_subpath() {
         credentials: HashMap::new(),
     };
     client.install_connector(req).await.unwrap();
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_get_plan_status_uses_singular_path() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(GET).path("/api/v1/plan/plan42");
-        then.status(200).json_body(json!({
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/plan/plan42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "plan_id": "plan42",
             "status": "completed",
             "duration": "1s",
             "completed_steps": 1,
             "total_steps": 1
-        }));
-    });
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
     let resp = client.get_plan_status("plan42").await.unwrap();
     assert_eq!(resp.plan_id, "plan42");
-    mock.assert();
 }
 
 #[tokio::test]
 async fn test_cancel_plan_uses_singular_path() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/api/v1/plan/plan42/cancel");
-        then.status(200).json_body(json!({
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/plan/plan42/cancel"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "plan_id": "plan42",
             "status": "cancelled",
             "success": true
-        }));
-    });
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let config = AxonFlowConfig {
-        endpoint: server.url(""),
+        endpoint: server.uri(),
         ..Default::default()
     };
     let client = AxonFlowClient::new(config).unwrap();
     let resp = client.cancel_plan("plan42", Some("test")).await.unwrap();
     assert_eq!(resp.plan_id, "plan42");
     assert!(resp.success);
-    mock.assert();
 }
