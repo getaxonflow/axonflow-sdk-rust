@@ -1,5 +1,6 @@
 pub mod client;
 pub mod config;
+pub mod decisions;
 pub mod error;
 pub mod heartbeat;
 pub mod interceptors;
@@ -14,3 +15,4 @@ pub use types::agent::{
     ConnectorResponse, MediaContent, PlanExecutionResponse, PlanResponse, PlanStep,
     PolicyEvaluationInfo, PolicyInfo, PolicyMatchInfo, StepResult, TokenUsage,
 };
+pub use types::decisions::{DecisionExplanation, ExplainPolicy, ExplainRule};

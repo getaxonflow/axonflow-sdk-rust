@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Decision explainability** (`client.explain_decision(decision_id)`) — fetches the structured `DecisionExplanation` for a previously-made policy decision. Implements the ADR-043 contract: matched policies, risk level, override availability, historical hit count, and tool signature. Closes the last cross-SDK parity gap for explainability (Go/Python/TypeScript/Java already shipped this in April). New `examples/explain_decision/` shows the end-to-end pattern.
+
+### Fixed
+
+- **URL-encoding parity with the other SDKs.** Path parameters (connector_id, plan_id, decision_id) were percent-encoded with `NON_ALPHANUMERIC`, which over-escapes the RFC-3986 unreserved characters `_`, `-`, `.`, `~`. Connector IDs like `amadeus-travel` were going on the wire as `amadeus%2Dtravel` and decision IDs like `dec_wf1_step2` would have gone as `dec%5Fwf1%5Fstep2`. Gorilla mux's permissive percent-decoding masked the bug on the platform side, but the wire form was wrong and any stricter router would 404. Replaced with a path-segment encode set matching Go's `url.PathEscape` semantics.
+
 ## [0.1.0] - 2026-05-05
 
 Initial release of the AxonFlow Rust SDK. The foundation was contributed voluntarily by [@fpierfed](https://github.com/fpierfed) — see [CONTRIBUTORS.md](CONTRIBUTORS.md).

@@ -5,7 +5,7 @@ use crate::types::agent::{ClientRequest, ClientResponse};
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use base64::Engine as _;
 use moka::future::Cache;
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,6 +13,33 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 const LICENSE_KEY_HEADER: &str = "X-License-Key";
+
+// Path-segment encode set: mirrors Go's `url.PathEscape` semantics so
+// percent-encoding parity holds across SDKs. Keeps RFC 3986 unreserved
+// characters (alphanum, `-`, `.`, `_`, `~`) unencoded; escapes path-
+// significant chars (`/`, `?`, `#`, `%`) plus controls and characters
+// that web infra commonly rejects (` "<>``\\{}`).
+//
+// Replaces the previous `NON_ALPHANUMERIC` usage which over-escaped
+// underscores and dashes — observable as `dec_wf1_step2` becoming
+// `dec%5Fwf1%5Fstep2` in the explain path, and `amadeus-travel`
+// becoming `amadeus%2Dtravel` for connector lookups. Gorilla mux
+// percent-decodes path segments so the platform happened to tolerate
+// the over-escaped form, but the wire was wrong and any stricter
+// router would 404. Found while wiring `decisions::explain_decision`.
+pub(crate) const PATH_SEGMENT: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'<')
+    .add(b'>')
+    .add(b'`')
+    .add(b'\\')
+    .add(b'{')
+    .add(b'}')
+    .add(b'#')
+    .add(b'?')
+    .add(b'/')
+    .add(b'%');
 
 #[derive(Clone)]
 pub struct AxonFlowClient {
@@ -202,7 +229,7 @@ impl AxonFlowClient {
         &self,
         connector_id: &str,
     ) -> Result<crate::types::agent::ConnectorMetadata, AxonFlowError> {
-        let encoded_id = utf8_percent_encode(connector_id, NON_ALPHANUMERIC);
+        let encoded_id = utf8_percent_encode(connector_id, PATH_SEGMENT);
         let url = format!("{}/api/v1/connectors/{}", self.config.endpoint, encoded_id);
         let resp = self.checked_get(&url).await?;
         Ok(resp.json().await?)
@@ -212,7 +239,7 @@ impl AxonFlowClient {
         &self,
         connector_id: &str,
     ) -> Result<crate::types::agent::ConnectorHealthStatus, AxonFlowError> {
-        let encoded_id = utf8_percent_encode(connector_id, NON_ALPHANUMERIC);
+        let encoded_id = utf8_percent_encode(connector_id, PATH_SEGMENT);
         let url = format!(
             "{}/api/v1/connectors/{}/health",
             self.config.endpoint, encoded_id
@@ -225,7 +252,7 @@ impl AxonFlowClient {
         &self,
         req: crate::types::agent::ConnectorInstallRequest,
     ) -> Result<(), AxonFlowError> {
-        let encoded_id = utf8_percent_encode(&req.connector_id, NON_ALPHANUMERIC);
+        let encoded_id = utf8_percent_encode(&req.connector_id, PATH_SEGMENT);
         let url = format!(
             "{}/api/v1/connectors/{}/install",
             self.config.endpoint, encoded_id
@@ -321,7 +348,7 @@ impl AxonFlowClient {
         &self,
         plan_id: &str,
     ) -> Result<crate::types::agent::PlanExecutionResponse, AxonFlowError> {
-        let encoded_id = utf8_percent_encode(plan_id, NON_ALPHANUMERIC);
+        let encoded_id = utf8_percent_encode(plan_id, PATH_SEGMENT);
         let url = format!("{}/api/v1/plan/{}", self.config.endpoint, encoded_id);
         let resp = self.checked_map_get(&url).await?;
         Ok(resp.json().await?)
@@ -336,7 +363,7 @@ impl AxonFlowClient {
             "reason": reason.unwrap_or("user_cancelled"),
         });
 
-        let encoded_id = utf8_percent_encode(plan_id, NON_ALPHANUMERIC);
+        let encoded_id = utf8_percent_encode(plan_id, PATH_SEGMENT);
         let url = format!("{}/api/v1/plan/{}/cancel", self.config.endpoint, encoded_id);
         let resp = self
             .map_http_client
@@ -418,7 +445,14 @@ impl AxonFlowClient {
         format!("{}:{}:{}{}", request_type, query, user_token, context_hash)
     }
 
-    async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
+    /// Endpoint URL the client is configured against.
+    /// Crate-internal accessor for sibling modules (e.g. `decisions.rs`)
+    /// that need to build absolute URLs without exposing `config`.
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
+
+    pub(crate) async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
         let resp = self.http_client.get(url).send().await?;
         Self::check_status(resp).await
     }

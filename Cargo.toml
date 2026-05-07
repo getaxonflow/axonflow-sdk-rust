@@ -45,3 +45,7 @@ path = "examples/planning/main.rs"
 [[example]]
 name = "interceptors"
 path = "examples/interceptors/main.rs"
+
+[[example]]
+name = "explain_decision"
+path = "examples/explain_decision/main.rs"
