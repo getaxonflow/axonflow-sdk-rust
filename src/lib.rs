@@ -15,4 +15,7 @@ pub use types::agent::{
     ConnectorResponse, MediaContent, PlanExecutionResponse, PlanResponse, PlanStep,
     PolicyEvaluationInfo, PolicyInfo, PolicyMatchInfo, StepResult, TokenUsage,
 };
-pub use types::decisions::{DecisionExplanation, ExplainPolicy, ExplainRule};
+pub use types::decisions::{
+    DecisionExplanation, DecisionSummary, ExplainPolicy, ExplainRule, ListDecisionsOptions,
+    RateLimitEnvelope, UpgradeInfo,
+};
