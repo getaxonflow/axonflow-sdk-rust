@@ -111,7 +111,9 @@ impl AxonFlowClient {
         if resp.status().as_u16() == 429 {
             let body = resp.text().await?;
             return match serde_json::from_str::<RateLimitEnvelope>(&body) {
-                Ok(envelope) => Err(AxonFlowError::RateLimited { envelope }),
+                Ok(envelope) => Err(AxonFlowError::RateLimited {
+                    envelope: Box::new(envelope),
+                }),
                 Err(_) => Err(AxonFlowError::ApiError {
                     status: 429,
                     message: body,
@@ -363,7 +365,6 @@ mod tests {
     use crate::decisions::build_decisions_query;
     use crate::error::AxonFlowError;
     use crate::types::decisions::{DecisionSummary, ListDecisionsOptions};
-    use chrono::TimeZone as _;
 
     #[tokio::test]
     async fn list_decisions_happy_path_parses_three_rows() {
@@ -484,7 +485,10 @@ mod tests {
                 assert_eq!(envelope.limit_type, "decision_list_size");
                 assert_eq!(envelope.limit, 5);
                 assert_eq!(envelope.upgrade.tier, "Pro");
-                assert_eq!(envelope.upgrade.compare_url, "https://getaxonflow.com/pricing/");
+                assert_eq!(
+                    envelope.upgrade.compare_url,
+                    "https://getaxonflow.com/pricing/"
+                );
                 assert_eq!(
                     envelope.upgrade.buy_url,
                     "https://buy.stripe.com/bJe28qbztcdVchjdkw8k800"

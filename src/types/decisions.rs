@@ -89,10 +89,10 @@ pub struct DecisionExplanation {
 
 /// Slim summary returned by `AxonFlowClient::list_decisions`.
 ///
-/// Matches the platform `GET /api/v1/decisions` contract: 5 fields,
-/// `policy_id` and `tool_signature` optional because pre-α1 audit rows
-/// + dynamic-only blocks may not populate them. ADR-043 §"Versioning"
-/// rules apply: additive `Option<>` fields are non-breaking.
+/// Matches the platform `GET /api/v1/decisions` contract: 5 fields.
+///   `policy_id` and `tool_signature` are optional because pre-α1 audit rows
+///   and dynamic-only blocks may not populate them. ADR-043 §"Versioning"
+///   rules apply: additive `Option<>` fields are non-breaking.
 ///
 /// Cross-SDK parity:
 ///   Go:     axonflow-sdk-go/decisions.go (DecisionSummary)

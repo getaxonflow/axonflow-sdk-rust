@@ -13,9 +13,11 @@ pub enum AxonFlowError {
     /// generic 429 ApiError because callers should branch on the upgrade
     /// fields (tier / compare_url / buy_url) without re-parsing the
     /// raw body. Mirrors the cross-SDK 429-with-envelope pattern
-    /// (#1982 / #1958).
+    /// (#1982 / #1958). Boxed to keep `AxonFlowError` small —
+    /// `RateLimitEnvelope` is ~176 bytes and would dominate the enum
+    /// otherwise (clippy::result_large_err).
     #[error("Rate limited (tier={}, limit_type={}): {}", .envelope.tier, .envelope.limit_type, .envelope.error)]
-    RateLimited { envelope: RateLimitEnvelope },
+    RateLimited { envelope: Box<RateLimitEnvelope> },
     #[error("Configuration error: {0}")]
     ConfigError(String),
     #[error("AxonFlow platform is unavailable: {0}")]
