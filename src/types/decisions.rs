@@ -86,3 +86,64 @@ pub struct DecisionExplanation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_signature: Option<String>,
 }
+
+/// Slim summary returned by `AxonFlowClient::list_decisions`.
+///
+/// Matches the platform `GET /api/v1/decisions` contract: 5 fields,
+/// `policy_id` and `tool_signature` optional because pre-α1 audit rows
+/// + dynamic-only blocks may not populate them. ADR-043 §"Versioning"
+/// rules apply: additive `Option<>` fields are non-breaking.
+///
+/// Cross-SDK parity:
+///   Go:     axonflow-sdk-go/decisions.go (DecisionSummary)
+///   Python: axonflow-sdk-python/axonflow/decisions.py (DecisionSummary)
+///   TS:     axonflow-sdk-typescript/src/types/decisions.ts (DecisionSummary)
+///   Java:   axonflow-sdk-java/src/main/java/com/getaxonflow/sdk/types/DecisionSummary.java
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct DecisionSummary {
+    pub decision_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_signature: Option<String>,
+}
+
+/// Optional filters for `AxonFlowClient::list_decisions`.
+///
+/// Every field is optional — leaving all `None` returns the tier-default
+/// page from the caller's tenant. `since` is RFC3339; `decision` is one of
+/// `"allow"|"deny"|"require_approval"`. `limit` is server-capped per tier;
+/// over-cap requests get a 429 with the V1 upgrade envelope.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListDecisionsOptions {
+    pub since: Option<DateTime<Utc>>,
+    pub decision: Option<String>,
+    pub policy_id: Option<String>,
+    pub tool_signature: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// Pricing-tier upgrade context returned in a 429 envelope when the caller's
+/// tier limits the operation. Mirrors the platform-side
+/// `feedback_429_no_upgrade_hint_is_conversion_gap.md` contract.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct UpgradeInfo {
+    pub tier: String,
+    pub wording: String,
+    pub compare_url: String,
+    pub buy_url: String,
+}
+
+/// Parsed body of a 429 response carrying a tier-cap envelope.
+/// Surfaced via `AxonFlowError::RateLimited`.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct RateLimitEnvelope {
+    pub error: String,
+    pub limit_type: String,
+    pub tier: String,
+    pub limit: u32,
+    pub remaining: u32,
+    pub upgrade: UpgradeInfo,
+}

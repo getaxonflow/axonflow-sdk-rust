@@ -457,6 +457,15 @@ impl AxonFlowClient {
         Self::check_status(resp).await
     }
 
+    /// Crate-internal GET that returns the raw response without translating
+    /// non-2xx into [`AxonFlowError::ApiError`]. Lets sibling modules branch
+    /// on specific status codes (e.g. parse a 429 V1 upgrade envelope into
+    /// [`AxonFlowError::RateLimited`]) before falling back to the generic
+    /// error path.
+    pub(crate) async fn raw_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
+        Ok(self.http_client.get(url).send().await?)
+    }
+
     async fn checked_map_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
         let resp = self.map_http_client.get(url).send().await?;
         Self::check_status(resp).await

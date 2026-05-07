@@ -1,3 +1,4 @@
+use crate::types::decisions::RateLimitEnvelope;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -8,6 +9,13 @@ pub enum AxonFlowError {
     SerdeError(#[from] serde_json::Error),
     #[error("API error ({status}): {message}")]
     ApiError { status: u16, message: String },
+    /// Tier-cap 429 with a parsed V1 upgrade envelope. Distinct from a
+    /// generic 429 ApiError because callers should branch on the upgrade
+    /// fields (tier / compare_url / buy_url) without re-parsing the
+    /// raw body. Mirrors the cross-SDK 429-with-envelope pattern
+    /// (#1982 / #1958).
+    #[error("Rate limited (tier={}, limit_type={}): {}", .envelope.tier, .envelope.limit_type, .envelope.error)]
+    RateLimited { envelope: RateLimitEnvelope },
     #[error("Configuration error: {0}")]
     ConfigError(String),
     #[error("AxonFlow platform is unavailable: {0}")]
@@ -19,6 +27,7 @@ impl AxonFlowError {
         match self {
             AxonFlowError::HttpError(e) => e.is_timeout() || e.is_connect(),
             AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
+            AxonFlowError::RateLimited { .. } => true,
             AxonFlowError::Unavailable(_) => true,
             _ => false,
         }
@@ -28,6 +37,7 @@ impl AxonFlowError {
         match self {
             AxonFlowError::HttpError(e) => e.is_timeout() || e.is_connect(),
             AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
+            AxonFlowError::RateLimited { .. } => true,
             AxonFlowError::Unavailable(_) => true,
             _ => false,
         }
