@@ -114,6 +114,11 @@ Then use `cargo run --example <name>` to execute an example:
     ```bash
     cargo run --example interceptors
     ```
+*   **Decision Explainability** (ADR-043):
+    ```bash
+    export AXONFLOW_DECISION_ID="dec_..." # from a recent blocked call or audit row
+    cargo run --example explain_decision
+    ```
 
 ## Advanced Features
 
