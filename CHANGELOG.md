@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-08
+
+### Removed
+
+- Telemetry `profile` field — collided with the existing `AXONFLOW_PROFILE` governance env var (`platform/agent/profile.go`, ADR-036), which has been the canonical lever for selecting policy-enforcement profile (`dev` / `default` / `strict` / `compliance`) since v6. Reusing the same env var as a free-form telemetry dimension would have caused the v1 telemetry validator to reject any value outside `dev` / `prod` / `unknown` while the governance engine accepted its own four-value allowlist — a customer-visible HTTP 400 on every `AXONFLOW_PROFILE=strict` deployment. The dimension also had no consumer in the central pipeline (no aggregator, no daily-report column, no dashboard), and `deployment_mode` already covers the topology axis it was meant to add. `AXONFLOW_PROFILE` reverts to its single original purpose; the SDK no longer reads it for telemetry.
+
 ## [0.2.0] - 2026-05-08 — Decision history API + central telemetry parity
 
 **Preview release.** The headline feature is the new decision-history client API
@@ -34,9 +40,9 @@ measurable consistently across all five SDKs.
 
 - **URL-encoding parity with the other SDKs.** Path parameters (connector_id, plan_id, decision_id) were percent-encoded with `NON_ALPHANUMERIC`, which over-escapes the RFC-3986 unreserved characters `_`, `-`, `.`, `~`. Connector IDs like `amadeus-travel` were going on the wire as `amadeus%2Dtravel` and decision IDs like `dec_wf1_step2` would have gone as `dec%5Fwf1%5Fstep2`. Gorilla mux's permissive percent-decoding masked the bug on the platform side, but the wire form was wrong and any stricter router would 404. Replaced with a path-segment encode set matching Go's `url.PathEscape` semantics.
 
-### Telemetry payload (v1 schema, axonflow-enterprise#2008)
+### Telemetry payload (v1 schema)
 
-- New heartbeat fields: `telemetry_type: "sdk"`, `profile` (from `AXONFLOW_PROFILE`, `unknown` when unset), `deployment_mode` aligned to `self_hosted | community_saas | unknown` via the new `classify_deployment_mode` (host + `AXONFLOW_TRY=1` override).
+- New heartbeat fields: `telemetry_type: "sdk"`, `deployment_mode` aligned to `self_hosted | community_saas | unknown` via the new `classify_deployment_mode` (host + `AXONFLOW_TRY=1` override).
 - `deployment_mode` no longer derives from `Mode` — the dimension reflects deployment topology only; `Mode::Sandbox` keeps tagging via `stream`.
 
 ## [0.1.0] - 2026-05-05

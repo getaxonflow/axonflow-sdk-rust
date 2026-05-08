@@ -296,15 +296,6 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
     // clients omit the field (server defaults empty to "heartbeat").
     // The omitempty semantic is implemented by serializing without the
     // field when None.
-    // v1 telemetry-schema profile dimension. Free-form deployment
-    // classifier (e.g. "production", "staging", "dev") sourced from
-    // AXONFLOW_PROFILE; reports "unknown" when unset.
-    let profile = std::env::var("AXONFLOW_PROFILE")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-
     let mut payload = serde_json::Map::new();
     // v1 telemetry-schema discriminator — always "sdk" for this crate.
     payload.insert("telemetry_type".into(), serde_json::Value::from("sdk"));
@@ -330,7 +321,6 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
     );
     payload.insert("features".into(), serde_json::Value::Array(vec![]));
     payload.insert("instance_id".into(), serde_json::Value::from(instance_id()));
-    payload.insert("profile".into(), serde_json::Value::from(profile));
     if let Some(stream) = stream_for_mode(mode) {
         payload.insert("stream".into(), serde_json::Value::from(stream));
     }
