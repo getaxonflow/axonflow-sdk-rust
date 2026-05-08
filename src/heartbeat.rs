@@ -64,17 +64,27 @@ pub fn maybe_send_heartbeat(endpoint: &str, mode: &Mode) {
             return;
         }
 
-        let stamp_path = match resolve_stamp_path() {
-            Some(p) => p,
-            None => {
-                debug!("Telemetry skipped: cache dir unresolvable");
+        // resolve_stamp_path returns None on environments without a usable
+        // cache dir — containerized runtimes with HOME unset, AWS Lambda,
+        // distroless images, etc. In that case we fall back to "one ping
+        // per process" via HEARTBEAT_ONCE (the Once gate above) — same
+        // semantic as the Go / Python / TypeScript / Java SDKs, which
+        // also degrade to per-process gating when their stamp path is
+        // unavailable. Pre-fix the Rust SDK exited early here, leaving
+        // restricted/containerized environments invisible to central
+        // telemetry — undercutting v0.2's parity goal. Reviewer-flagged
+        // 2026-05-08.
+        let stamp_path = resolve_stamp_path();
+
+        // Only consult the stamp file if we have one. When None, the
+        // per-process Once gate is the only rate-limit.
+        if let Some(ref p) = stamp_path {
+            if stamp_is_fresh(p) {
+                debug!("Telemetry heartbeat is still fresh (<7 days)");
                 return;
             }
-        };
-
-        if stamp_is_fresh(&stamp_path) {
-            debug!("Telemetry heartbeat is still fresh (<7 days)");
-            return;
+        } else {
+            debug!("Telemetry stamp path unavailable; falling back to per-process gate");
         }
 
         let endpoint = endpoint.to_string();
@@ -240,7 +250,7 @@ fn instance_id() -> String {
     )
 }
 
-async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: PathBuf) {
+async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>) {
     let checkpoint_url = std::env::var("AXONFLOW_CHECKPOINT_URL")
         .unwrap_or_else(|_| DEFAULT_CHECKPOINT_URL.to_string());
 
@@ -293,15 +303,21 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: PathBuf) {
         Ok(resp) if resp.status().is_success() => {
             debug!("Telemetry heartbeat delivered");
             // Stamp-on-delivery: only update the file when we know the
-            // ping landed, so a transient failure retries on the next
-            // process start instead of being suppressed for 7 days.
-            if let Some(parent) = stamp_path.parent() {
-                let _ = fs::create_dir_all(parent);
+            // ping landed AND we have a stamp path. When stamp_path is
+            // None (containerized envs without a usable cache dir), the
+            // per-process Once gate is the only rate-limit — we still
+            // sent the ping but persist nothing across restarts. Same
+            // fallback as Go / Python / TS / Java SDKs in equivalent
+            // environments.
+            if let Some(stamp_path) = stamp_path {
+                if let Some(parent) = stamp_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(
+                    &stamp_path,
+                    format!("last_sent={}", chrono::Utc::now().to_rfc3339()),
+                );
             }
-            let _ = fs::write(
-                &stamp_path,
-                format!("last_sent={}", chrono::Utc::now().to_rfc3339()),
-            );
         }
         Ok(resp) => debug!("Telemetry heartbeat rejected by server: {}", resp.status()),
         Err(e) => debug!("Telemetry heartbeat failed: {}", e),
