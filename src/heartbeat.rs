@@ -145,7 +145,10 @@ fn classify_endpoint(endpoint: &str) -> &'static str {
         // url crate returns IPv6 host strings with surrounding brackets
         // (e.g. "[::1]") — strip them before IP-parsing so loopback
         // detection works for `http://[::1]:8080` and similar URLs.
-        Some(h) => h.trim_start_matches('[').trim_end_matches(']').to_lowercase(),
+        Some(h) => h
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_lowercase(),
         None => return ENDPOINT_TYPE_UNKNOWN,
     };
 
@@ -171,9 +174,7 @@ fn classify_endpoint(endpoint: &str) -> &'static str {
 
 fn is_private_or_link_local(ip: &std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_link_local()
-        }
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
         std::net::IpAddr::V6(v6) => {
             // ULA fc00::/7 + link-local fe80::/10. Stable methods aren't
             // available on stable Rust for IPv6 private detection, so
@@ -233,7 +234,9 @@ fn instance_id() -> String {
         u16::from_le_bytes([bytes[4], bytes[5]]),
         u16::from_le_bytes([bytes[6], bytes[7]]) & 0x0fff,
         (u16::from_le_bytes([bytes[0], bytes[7]]) & 0x3fff) | 0x8000,
-        u64::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[0], bytes[7]]) & 0xffff_ffff_ffff
+        u64::from_le_bytes([
+            bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[0], bytes[7]
+        ]) & 0xffff_ffff_ffff
     )
 }
 
@@ -276,10 +279,7 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: PathBuf) {
         "endpoint_type".into(),
         serde_json::Value::from(classify_endpoint(endpoint)),
     );
-    payload.insert(
-        "features".into(),
-        serde_json::Value::Array(vec![]),
-    );
+    payload.insert("features".into(), serde_json::Value::Array(vec![]));
     payload.insert("instance_id".into(), serde_json::Value::from(instance_id()));
     if let Some(stream) = stream_for_mode(mode) {
         payload.insert("stream".into(), serde_json::Value::from(stream));
@@ -314,26 +314,56 @@ mod tests {
 
     #[test]
     fn classify_endpoint_localhost_variants() {
-        assert_eq!(classify_endpoint("http://localhost:8080"), ENDPOINT_TYPE_LOCALHOST);
-        assert_eq!(classify_endpoint("https://127.0.0.1:8080"), ENDPOINT_TYPE_LOCALHOST);
-        assert_eq!(classify_endpoint("http://0.0.0.0:9090"), ENDPOINT_TYPE_LOCALHOST);
-        assert_eq!(classify_endpoint("http://my.localhost"), ENDPOINT_TYPE_LOCALHOST);
-        assert_eq!(classify_endpoint("http://[::1]:8080"), ENDPOINT_TYPE_LOCALHOST);
+        assert_eq!(
+            classify_endpoint("http://localhost:8080"),
+            ENDPOINT_TYPE_LOCALHOST
+        );
+        assert_eq!(
+            classify_endpoint("https://127.0.0.1:8080"),
+            ENDPOINT_TYPE_LOCALHOST
+        );
+        assert_eq!(
+            classify_endpoint("http://0.0.0.0:9090"),
+            ENDPOINT_TYPE_LOCALHOST
+        );
+        assert_eq!(
+            classify_endpoint("http://my.localhost"),
+            ENDPOINT_TYPE_LOCALHOST
+        );
+        assert_eq!(
+            classify_endpoint("http://[::1]:8080"),
+            ENDPOINT_TYPE_LOCALHOST
+        );
     }
 
     #[test]
     fn classify_endpoint_private_variants() {
         assert_eq!(classify_endpoint("http://10.1.2.3"), ENDPOINT_TYPE_PRIVATE);
-        assert_eq!(classify_endpoint("http://192.168.1.1"), ENDPOINT_TYPE_PRIVATE);
-        assert_eq!(classify_endpoint("http://172.16.0.1"), ENDPOINT_TYPE_PRIVATE);
+        assert_eq!(
+            classify_endpoint("http://192.168.1.1"),
+            ENDPOINT_TYPE_PRIVATE
+        );
+        assert_eq!(
+            classify_endpoint("http://172.16.0.1"),
+            ENDPOINT_TYPE_PRIVATE
+        );
         assert_eq!(classify_endpoint("http://api.local"), ENDPOINT_TYPE_PRIVATE);
-        assert_eq!(classify_endpoint("http://api.internal"), ENDPOINT_TYPE_PRIVATE);
+        assert_eq!(
+            classify_endpoint("http://api.internal"),
+            ENDPOINT_TYPE_PRIVATE
+        );
     }
 
     #[test]
     fn classify_endpoint_remote() {
-        assert_eq!(classify_endpoint("https://api.example.com"), ENDPOINT_TYPE_REMOTE);
-        assert_eq!(classify_endpoint("https://203.0.113.5"), ENDPOINT_TYPE_REMOTE);
+        assert_eq!(
+            classify_endpoint("https://api.example.com"),
+            ENDPOINT_TYPE_REMOTE
+        );
+        assert_eq!(
+            classify_endpoint("https://203.0.113.5"),
+            ENDPOINT_TYPE_REMOTE
+        );
     }
 
     #[test]
