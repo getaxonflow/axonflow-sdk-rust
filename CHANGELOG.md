@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-05-08
-
-### Removed
-
-- Telemetry `profile` field — collided with the existing `AXONFLOW_PROFILE` governance env var (`platform/agent/profile.go`, ADR-036), which has been the canonical lever for selecting policy-enforcement profile (`dev` / `default` / `strict` / `compliance`) since v6. Reusing the same env var as a free-form telemetry dimension would have caused the v1 telemetry validator to reject any value outside `dev` / `prod` / `unknown` while the governance engine accepted its own four-value allowlist — a customer-visible HTTP 400 on every `AXONFLOW_PROFILE=strict` deployment. The dimension also had no consumer in the central pipeline (no aggregator, no daily-report column, no dashboard), and `deployment_mode` already covers the topology axis it was meant to add. `AXONFLOW_PROFILE` reverts to its single original purpose; the SDK no longer reads it for telemetry.
-
 ## [0.2.0] - 2026-05-08 — Decision history API + central telemetry parity
 
 **Preview release.** The headline feature is the new decision-history client API
