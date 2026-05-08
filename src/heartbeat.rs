@@ -440,7 +440,10 @@ mod tests {
         // Empty/unparseable -> unknown.
         std::env::remove_var("AXONFLOW_TRY");
         assert_eq!(classify_deployment_mode(""), DEPLOYMENT_MODE_UNKNOWN);
-        assert_eq!(classify_deployment_mode("not a url"), DEPLOYMENT_MODE_UNKNOWN);
+        assert_eq!(
+            classify_deployment_mode("not a url"),
+            DEPLOYMENT_MODE_UNKNOWN
+        );
         // Public host -> self_hosted.
         assert_eq!(
             classify_deployment_mode("https://api.example.com"),
