@@ -158,7 +158,9 @@ let config = AxonFlowConfig {
 
 ## Telemetry
 
-The SDK includes a non-blocking background heartbeat that follows the AxonFlow telemetry contract: **at most one anonymous ping per machine every 7 days**. This is used for licensing compliance and platform health monitoring. Opt out: `AXONFLOW_TELEMETRY=off`.
+The SDK includes a non-blocking background heartbeat that follows the AxonFlow telemetry contract: **at most one anonymous ping per machine every 7 days** to `https://checkpoint.getaxonflow.com/v1/ping`. Payload is classification-only — SDK version, OS, architecture, runtime version, deployment mode, and an endpoint-type bucket (`localhost` / `private_network` / `remote` / `unknown`). The raw URL is never sent.
+
+`AXONFLOW_TELEMETRY=off` is the **sole opt-out lever** as of v0.2. There is no programmatic disable on the SDK config — the env-var-only pattern matches HashiCorp's `CHECKPOINT_DISABLE`, Docker, and Datadog Agent. Sandbox-mode clients (constructed via `AxonFlowConfig::sandbox(...)`) tag their pings with `stream="sandbox"` so analytics can distinguish dev/test usage from production heartbeat. `DO_NOT_TRACK` is intentionally not honored.
 
 ### Scope of `AXONFLOW_TELEMETRY=off`
 

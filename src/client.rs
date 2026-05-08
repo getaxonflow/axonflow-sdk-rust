@@ -128,7 +128,7 @@ impl AxonFlowClient {
             None
         };
 
-        maybe_send_heartbeat(&config.endpoint);
+        maybe_send_heartbeat(&config.endpoint, &config.mode);
 
         Ok(Self {
             config,

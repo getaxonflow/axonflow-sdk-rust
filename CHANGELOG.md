@@ -7,9 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-08 — Decision history API + central telemetry parity
+
+**Preview release.** The headline feature is the new decision-history client API
+(`list_decisions`) plus the `explain_decision` example, both bringing Rust to
+parity with the four stable SDKs. The other half is a telemetry rework that
+brings Rust onto AxonFlow's central anonymous-heartbeat pipeline so adoption is
+measurable consistently across all five SDKs.
+
 ### Added
 
-- **Decision explainability** (`client.explain_decision(decision_id)`) — fetches the structured `DecisionExplanation` for a previously-made policy decision. Implements the ADR-043 contract: matched policies, risk level, override availability, historical hit count, and tool signature. Closes the last cross-SDK parity gap for explainability (Go/Python/TypeScript/Java already shipped this in April). New `examples/explain_decision/` shows the end-to-end pattern.
+- **`list_decisions(opts)`** client method paging through recorded decision history from the orchestrator. Mirrors `GET /api/v1/decisions`. Companion to `explain_decision` — list and drill in. See `examples/list_decisions/`.
+- **`AxonFlowConfig::sandbox(client_id, client_secret)`** convenience constructor for local testing. Defaults to `http://localhost:8080`, sets `mode = Mode::Sandbox`, enables debug logging. Parity with Go's `Sandbox()`, Python's `.sandbox()`, TypeScript's `AxonFlow.sandbox()`, Java's `AxonFlow.sandbox(url)`.
+
+### Changed
+
+- **Heartbeat endpoint moved to central checkpoint** (`https://checkpoint.getaxonflow.com/v1/ping`). Pre-v0.2 the Rust SDK pinged `{configured_endpoint}/api/telemetry/heartbeat` against the local agent — useful for proxy debugging but invisible to AxonFlow's central telemetry pipeline. The endpoint switch brings Rust into parity with the other 4 SDKs, so adoption is measurable consistently across the language matrix.
+- **Heartbeat payload expanded** to match the cross-SDK shape: `sdk`, `sdk_version`, `os`, `arch`, `runtime_version`, `deployment_mode`, `endpoint_type` (classification only — never the raw URL, per issue #1525), `instance_id`, and `stream` (sandbox-mode clients only). The 7-day per-machine cadence and stamp-on-delivery semantics are unchanged.
+- **`AXONFLOW_TELEMETRY=off` is the SOLE opt-out path.** There is no programmatic disable on the SDK config — same single-lever pattern as HashiCorp checkpoint, Docker, Datadog Agent. `DO_NOT_TRACK` is intentionally NOT honored (host CLIs commonly inherit it, making it an unreliable expression of AxonFlow-scoped intent).
+
+### Decision explainability (carried forward)
+
+- **`client.explain_decision(decision_id)`** — fetches the structured `DecisionExplanation` for a previously-made policy decision. Implements the ADR-043 contract: matched policies, risk level, override availability, historical hit count, and tool signature. New `examples/explain_decision/` shows the end-to-end pattern.
 
 ### Fixed
 

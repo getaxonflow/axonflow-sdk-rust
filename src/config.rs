@@ -105,6 +105,25 @@ impl AxonFlowConfig {
         }
     }
 
+    /// Convenience constructor for local development. Defaults to
+    /// `http://localhost:8080` (the docker-compose agent default), sets
+    /// `mode = Mode::Sandbox`, and enables debug logging.
+    ///
+    /// Sandbox-mode clients fire anonymous telemetry tagged `stream="sandbox"`
+    /// — see `heartbeat::maybe_send_heartbeat`. Set `AXONFLOW_TELEMETRY=off`
+    /// to opt out (the SOLE opt-out lever; there is intentionally no
+    /// programmatic disable on the SDK config).
+    pub fn sandbox(client_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
+        Self {
+            endpoint: "http://localhost:8080".to_string(),
+            client_id: Some(client_id.into()),
+            client_secret: Some(client_secret.into()),
+            mode: Mode::Sandbox,
+            debug: true,
+            ..Default::default()
+        }
+    }
+
     pub fn with_auth(
         mut self,
         client_id: impl Into<String>,
