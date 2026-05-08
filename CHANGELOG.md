@@ -34,6 +34,11 @@ measurable consistently across all five SDKs.
 
 - **URL-encoding parity with the other SDKs.** Path parameters (connector_id, plan_id, decision_id) were percent-encoded with `NON_ALPHANUMERIC`, which over-escapes the RFC-3986 unreserved characters `_`, `-`, `.`, `~`. Connector IDs like `amadeus-travel` were going on the wire as `amadeus%2Dtravel` and decision IDs like `dec_wf1_step2` would have gone as `dec%5Fwf1%5Fstep2`. Gorilla mux's permissive percent-decoding masked the bug on the platform side, but the wire form was wrong and any stricter router would 404. Replaced with a path-segment encode set matching Go's `url.PathEscape` semantics.
 
+### Telemetry payload (v1 schema, axonflow-enterprise#2008)
+
+- New heartbeat fields: `telemetry_type: "sdk"`, `profile` (from `AXONFLOW_PROFILE`, `unknown` when unset), `deployment_mode` aligned to `self_hosted | community_saas | unknown` via the new `classify_deployment_mode` (host + `AXONFLOW_TRY=1` override).
+- `deployment_mode` no longer derives from `Mode` — the dimension reflects deployment topology only; `Mode::Sandbox` keeps tagging via `stream`.
+
 ## [0.1.0] - 2026-05-05
 
 Initial release of the AxonFlow Rust SDK. The foundation was contributed voluntarily by [@fpierfed](https://github.com/fpierfed) — see [CONTRIBUTORS.md](CONTRIBUTORS.md).

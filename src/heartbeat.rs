@@ -195,11 +195,38 @@ fn is_private_or_link_local(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-fn deployment_mode_str(mode: &Mode) -> &'static str {
-    match mode {
-        Mode::Production => "production",
-        Mode::Sandbox => "sandbox",
+// v1 telemetry-schema deployment_mode allowlist (axonflow-enterprise#2008).
+// Reflects deployment topology only — the prior config.Mode-based
+// production/sandbox split moved to the `stream` field.
+pub const DEPLOYMENT_MODE_SELF_HOSTED: &str = "self_hosted";
+pub const DEPLOYMENT_MODE_COMMUNITY_SAAS: &str = "community_saas";
+pub const DEPLOYMENT_MODE_UNKNOWN: &str = "unknown";
+
+/// Classify the configured AxonFlow endpoint into the v1 deployment-mode
+/// allowlist (`self_hosted | community_saas | unknown`). Community-SaaS
+/// detection fires on either an `*.try.getaxonflow.com` host or
+/// `AXONFLOW_TRY=1` (the explicit override path for tenants behind a
+/// custom hostname proxying try.getaxonflow.com). Empty/unparseable
+/// endpoints resolve to `unknown`.
+fn classify_deployment_mode(endpoint: &str) -> &'static str {
+    if std::env::var("AXONFLOW_TRY").unwrap_or_default() == "1" {
+        return DEPLOYMENT_MODE_COMMUNITY_SAAS;
     }
+    if endpoint.is_empty() {
+        return DEPLOYMENT_MODE_UNKNOWN;
+    }
+    let parsed = match url::Url::parse(endpoint) {
+        Ok(u) => u,
+        Err(_) => return DEPLOYMENT_MODE_UNKNOWN,
+    };
+    let host = match parsed.host_str() {
+        Some(h) => h.to_lowercase(),
+        None => return DEPLOYMENT_MODE_UNKNOWN,
+    };
+    if host == "try.getaxonflow.com" || host.ends_with(".try.getaxonflow.com") {
+        return DEPLOYMENT_MODE_COMMUNITY_SAAS;
+    }
+    DEPLOYMENT_MODE_SELF_HOSTED
 }
 
 fn stream_for_mode(mode: &Mode) -> Option<&'static str> {
@@ -269,7 +296,18 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
     // clients omit the field (server defaults empty to "heartbeat").
     // The omitempty semantic is implemented by serializing without the
     // field when None.
+    // v1 telemetry-schema profile dimension. Free-form deployment
+    // classifier (e.g. "production", "staging", "dev") sourced from
+    // AXONFLOW_PROFILE; reports "unknown" when unset.
+    let profile = std::env::var("AXONFLOW_PROFILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+
     let mut payload = serde_json::Map::new();
+    // v1 telemetry-schema discriminator — always "sdk" for this crate.
+    payload.insert("telemetry_type".into(), serde_json::Value::from("sdk"));
     payload.insert("sdk".into(), serde_json::Value::from("rust"));
     payload.insert(
         "sdk_version".into(),
@@ -281,9 +319,10 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
         "runtime_version".into(),
         serde_json::Value::from(runtime_version_str()),
     );
+    // v1 schema: deployment_mode classifies from endpoint host + AXONFLOW_TRY=1.
     payload.insert(
         "deployment_mode".into(),
-        serde_json::Value::from(deployment_mode_str(mode)),
+        serde_json::Value::from(classify_deployment_mode(endpoint)),
     );
     payload.insert(
         "endpoint_type".into(),
@@ -291,6 +330,7 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
     );
     payload.insert("features".into(), serde_json::Value::Array(vec![]));
     payload.insert("instance_id".into(), serde_json::Value::from(instance_id()));
+    payload.insert("profile".into(), serde_json::Value::from(profile));
     if let Some(stream) = stream_for_mode(mode) {
         payload.insert("stream".into(), serde_json::Value::from(stream));
     }
@@ -395,9 +435,33 @@ mod tests {
     }
 
     #[test]
-    fn deployment_mode_str_matches_other_sdks() {
-        assert_eq!(deployment_mode_str(&Mode::Production), "production");
-        assert_eq!(deployment_mode_str(&Mode::Sandbox), "sandbox");
+    fn classify_deployment_mode_v1_schema() {
+        // v1 schema: deployment_mode is endpoint-derived, not Mode-derived.
+        // Empty/unparseable -> unknown.
+        std::env::remove_var("AXONFLOW_TRY");
+        assert_eq!(classify_deployment_mode(""), DEPLOYMENT_MODE_UNKNOWN);
+        assert_eq!(classify_deployment_mode("not a url"), DEPLOYMENT_MODE_UNKNOWN);
+        // Public host -> self_hosted.
+        assert_eq!(
+            classify_deployment_mode("https://api.example.com"),
+            DEPLOYMENT_MODE_SELF_HOSTED
+        );
+        // *.try.getaxonflow.com -> community_saas.
+        assert_eq!(
+            classify_deployment_mode("https://try.getaxonflow.com"),
+            DEPLOYMENT_MODE_COMMUNITY_SAAS
+        );
+        assert_eq!(
+            classify_deployment_mode("https://eu.try.getaxonflow.com"),
+            DEPLOYMENT_MODE_COMMUNITY_SAAS
+        );
+        // AXONFLOW_TRY=1 forces community_saas regardless of host.
+        std::env::set_var("AXONFLOW_TRY", "1");
+        assert_eq!(
+            classify_deployment_mode("https://my-proxy.example.com"),
+            DEPLOYMENT_MODE_COMMUNITY_SAAS
+        );
+        std::env::remove_var("AXONFLOW_TRY");
     }
 
     #[test]
