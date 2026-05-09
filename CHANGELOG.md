@@ -19,6 +19,7 @@ measurable consistently across all five SDKs.
 
 - **`list_decisions(opts)`** client method paging through recorded decision history from the orchestrator. Mirrors `GET /api/v1/decisions`. Companion to `explain_decision` — list and drill in. See `examples/list_decisions/`.
 - **`AxonFlowConfig::sandbox(client_id, client_secret)`** convenience constructor for local testing. Defaults to `http://localhost:8080`, sets `mode = Mode::Sandbox`, enables debug logging. Parity with Go's `Sandbox()`, Python's `.sandbox()`, TypeScript's `AxonFlow.sandbox()`, Java's `AxonFlow.sandbox(url)`.
+- **`WrappedAnthropicClient` invisible-governance interceptor for Anthropic models.** Wrap any client implementing `AnthropicMessageCreator` and AxonFlow pre-checks policy on every `create_message` call, blocks denied calls, and asynchronously audits successful responses. Mirrors the existing `WrappedOpenAIClient` pattern; supports the Anthropic Messages-API request shape (required `max_tokens`, optional `system`). New `examples/anthropic_interceptor/` shows the end-to-end flow.
 
 ### Changed
 
@@ -38,6 +39,10 @@ measurable consistently across all five SDKs.
 
 - New heartbeat fields: `telemetry_type: "sdk"`, `deployment_mode` aligned to `self_hosted | community_saas | unknown` via the new `classify_deployment_mode` (host + `AXONFLOW_TRY=1` override).
 - `deployment_mode` no longer derives from `Mode` — the dimension reflects deployment topology only; `Mode::Sandbox` keeps tagging via `stream`.
+
+### Maintenance
+
+- Test-suite mocking library swapped from `httpmock` to `wiremock`. Test-only `dev-dependencies` change with no public API or wire-contract impact; downstream consumers using `axonflow-sdk-rust` as a runtime dependency are unaffected. The previous library's transitive dependency on `async-std` is unmaintained.
 
 ## [0.1.0] - 2026-05-05
 
