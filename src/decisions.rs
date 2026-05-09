@@ -178,9 +178,10 @@ mod tests {
     use crate::types::decisions::DecisionExplanation;
     use crate::{AxonFlowClient, AxonFlowConfig};
     use chrono::{TimeZone, Utc};
-    use httpmock::prelude::*;
     use serde_json::json;
     use std::time::Duration;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_client(endpoint: String) -> AxonFlowClient {
         let config = AxonFlowConfig {
@@ -204,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn happy_path_parses_full_payload() {
-        let server = MockServer::start();
+        let server = MockServer::start().await;
         let want = json!({
             "decision_id": "dec_wf1_step2",
             "timestamp": "2026-04-17T12:00:00Z",
@@ -222,18 +223,20 @@ mod tests {
             "historical_hit_count_session": 3
         });
 
-        let mock = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/v1/decisions/dec_wf1_step2/explain");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(want);
-        });
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions/dec_wf1_step2/explain"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(want),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let got = client.explain_decision("dec_wf1_step2").await.unwrap();
 
-        mock.assert();
         assert_eq!(got.decision_id, "dec_wf1_step2");
         assert_eq!(got.decision, "deny");
         assert_eq!(got.reason, "SQL injection detected");
@@ -254,34 +257,37 @@ mod tests {
         // Decision IDs containing '/' must be percent-encoded so they don't
         // corrupt the path. Ensures parity with axonflow-sdk-go's PathEscape
         // contract test (decisions_test.go::TestExplainDecision_URLEncodesDecisionID).
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions/a%2Fb/explain");
-            then.status(200).json_body(json!({
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions/a%2Fb/explain"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "decision_id": "a/b",
                 "timestamp": "2026-04-17T12:00:00Z",
                 "decision": "allow",
                 "reason": "",
                 "policy_matches": []
-            }));
-        });
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         client.explain_decision("a/b").await.unwrap();
-        mock.assert();
     }
 
     #[tokio::test]
     async fn http_404_surfaces_as_api_error() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/v1/decisions/dec-missing/explain");
-            then.status(404)
-                .json_body(json!({"error": "Decision not found or past retention window"}));
-        });
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions/dec-missing/explain"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(json!({"error": "Decision not found or past retention window"})),
+            )
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let err = client.explain_decision("dec-missing").await.unwrap_err();
         match err {
             crate::error::AxonFlowError::ApiError { status, .. } => assert_eq!(status, 404),
@@ -295,14 +301,17 @@ mod tests {
         // (platform/orchestrator/explain_handler.go:80). Caller-side rendering
         // should distinguish "not authorized" from "not found" — covered by
         // the ApiError status.
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions/dec-x/explain");
-            then.status(401)
-                .json_body(json!({"error": "X-Tenant-ID header is required"}));
-        });
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions/dec-x/explain"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(json!({"error": "X-Tenant-ID header is required"})),
+            )
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let err = client.explain_decision("dec-x").await.unwrap_err();
         match err {
             crate::error::AxonFlowError::ApiError { status, .. } => assert_eq!(status, 401),
@@ -312,15 +321,18 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_json_response_is_serde_error() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions/dec-x/explain");
-            then.status(200)
-                .header("content-type", "application/json")
-                .body("{not valid json");
-        });
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions/dec-x/explain"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string("{not valid json"),
+            )
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let err = client.explain_decision("dec-x").await.unwrap_err();
         match err {
             crate::error::AxonFlowError::SerdeError(_) => {}
@@ -337,10 +349,10 @@ mod tests {
         // of the SDK. (Default serde_json behavior is to ignore unknown
         // fields; this test pins that contract so it cannot regress via a
         // future #[serde(deny_unknown_fields)] addition.)
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions/dec-x/explain");
-            then.status(200).json_body(json!({
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions/dec-x/explain"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "decision_id": "dec-x",
                 "timestamp": "2026-04-17T12:00:00Z",
                 "decision": "allow",
@@ -349,10 +361,11 @@ mod tests {
                 "policy_version_at_decision": "v3",      // future-additive (V1.1)
                 "latest_policy_version": "v5",            // future-additive (V1.1)
                 "yet_another_future_field": "shrug"      // arbitrary forward-compat
-            }));
-        });
+            })))
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let got: DecisionExplanation = client.explain_decision("dec-x").await.unwrap();
         assert_eq!(got.decision_id, "dec-x");
     }
@@ -368,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_decisions_happy_path_parses_three_rows() {
-        let server = MockServer::start();
+        let server = MockServer::start().await;
         let want = json!({
             "decisions": [
                 {
@@ -395,14 +408,17 @@ mod tests {
             ]
         });
 
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(want);
-        });
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(want),
+            )
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let got = client
             .list_decisions(ListDecisionsOptions::default())
             .await
@@ -418,22 +434,24 @@ mod tests {
 
     #[tokio::test]
     async fn list_decisions_serializes_every_filter_into_url() {
-        let server = MockServer::start();
+        let server = MockServer::start().await;
         // Mock matches the EXACT query string we expect — if the SDK
         // forgets to register a field in the URL builder, the mock
-        // returns 404 (httpmock default) and the test fails.
-        let mock = server.mock(|when, then| {
-            when.method(GET)
-                .path("/api/v1/decisions")
-                .query_param("since", "2026-05-07T00:00:00Z")
-                .query_param("decision", "deny")
-                .query_param("policy_id", "pol-sqli")
-                .query_param("tool_signature", "postgres.query")
-                .query_param("limit", "25");
-            then.status(200).json_body(json!({"decisions": []}));
-        });
+        // returns 404 and the test fails via the unmatched-request
+        // assertion (.expect(1) below).
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions"))
+            .and(query_param("since", "2026-05-07T00:00:00Z"))
+            .and(query_param("decision", "deny"))
+            .and(query_param("policy_id", "pol-sqli"))
+            .and(query_param("tool_signature", "postgres.query"))
+            .and(query_param("limit", "25"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"decisions": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let opts = ListDecisionsOptions {
             since: Some(Utc.with_ymd_and_hms(2026, 5, 7, 0, 0, 0).unwrap()),
             decision: Some("deny".into()),
@@ -442,12 +460,11 @@ mod tests {
             limit: Some(25),
         };
         let _ = client.list_decisions(opts).await.unwrap();
-        mock.assert();
     }
 
     #[tokio::test]
     async fn list_decisions_429_surfaces_typed_rate_limit_envelope() {
-        let server = MockServer::start();
+        let server = MockServer::start().await;
         let envelope = json!({
             "error": "Free tier shows the last 5 decisions in 24h. Pro raises this to 100 decisions in the last 30 days.",
             "limit_type": "decision_list_size",
@@ -462,15 +479,18 @@ mod tests {
             }
         });
 
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions");
-            then.status(429)
-                .header("content-type", "application/json")
-                .header("X-Axonflow-Tier-Limit", "decision_list_size")
-                .json_body(envelope);
-        });
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("X-Axonflow-Tier-Limit", "decision_list_size")
+                    .set_body_json(envelope),
+            )
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let err = client
             .list_decisions(ListDecisionsOptions {
                 limit: Some(10),
@@ -503,15 +523,18 @@ mod tests {
         // If the platform changes the 429 shape and the SDK can't parse
         // the envelope, we must still surface the 429 — not panic or
         // silently succeed. Falls through to ApiError{status=429}.
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions");
-            then.status(429)
-                .header("content-type", "application/json")
-                .body("not a json envelope");
-        });
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string("not a json envelope"),
+            )
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let err = client
             .list_decisions(ListDecisionsOptions::default())
             .await
@@ -524,15 +547,18 @@ mod tests {
 
     #[tokio::test]
     async fn list_decisions_401_surfaces_as_apierror() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions");
-            then.status(401)
-                .header("content-type", "application/json")
-                .json_body(json!({"error": "X-Tenant-ID header is required"}));
-        });
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(json!({"error": "X-Tenant-ID header is required"})),
+            )
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let err = client
             .list_decisions(ListDecisionsOptions::default())
             .await
@@ -548,7 +574,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_decisions_forward_compat_unknown_fields_ignored() {
-        let server = MockServer::start();
+        let server = MockServer::start().await;
         let want = json!({
             "decisions": [{
                 "decision_id": "dec-fwd",
@@ -563,12 +589,13 @@ mod tests {
             "next_cursor": "future_cursor_pagination" // outer envelope additive
         });
 
-        server.mock(|when, then| {
-            when.method(GET).path("/api/v1/decisions");
-            then.status(200).json_body(want);
-        });
+        Mock::given(method("GET"))
+            .and(path("/api/v1/decisions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(want))
+            .mount(&server)
+            .await;
 
-        let client = make_client(server.url(""));
+        let client = make_client(server.uri());
         let got = client
             .list_decisions(ListDecisionsOptions::default())
             .await
