@@ -90,6 +90,13 @@ jobs:
           AXONFLOW_CLIENT_SECRET: demo-secret
         run: timeout 60 cargo run --example interceptors
 
+      - name: Run integration test (anthropic_interceptor)
+        env:
+          AXONFLOW_AGENT_URL: http://localhost:8080
+          AXONFLOW_CLIENT_ID: demo-client
+          AXONFLOW_CLIENT_SECRET: demo-secret
+        run: timeout 60 cargo run --example anthropic_interceptor
+
       # Logs MUST be captured before `Stop Community Stack` runs — `compose
       # down` destroys the containers and `compose logs` then returns nothing.
       - name: Show Docker Logs on Failure
