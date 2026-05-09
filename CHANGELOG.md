@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-05-08 — Decision history API + central telemetry parity
+## [0.2.0] - 2026-05-09 — Decision history API + central telemetry parity
 
 **Preview release.** The headline feature is the new decision-history client API
 (`list_decisions`) plus the `explain_decision` example, both bringing Rust to
@@ -20,24 +20,18 @@ measurable consistently across all five SDKs.
 - **`list_decisions(opts)`** client method paging through recorded decision history from the orchestrator. Mirrors `GET /api/v1/decisions`. Companion to `explain_decision` — list and drill in. See `examples/list_decisions/`.
 - **`AxonFlowConfig::sandbox(client_id, client_secret)`** convenience constructor for local testing. Defaults to `http://localhost:8080`, sets `mode = Mode::Sandbox`, enables debug logging. Parity with Go's `Sandbox()`, Python's `.sandbox()`, TypeScript's `AxonFlow.sandbox()`, Java's `AxonFlow.sandbox(url)`.
 
-### Changed
+### Decision explainability
 
-- **Heartbeat endpoint moved to central checkpoint** (`https://checkpoint.getaxonflow.com/v1/ping`). Pre-v0.2 the Rust SDK pinged `{configured_endpoint}/api/telemetry/heartbeat` against the local agent — useful for proxy debugging but invisible to AxonFlow's central telemetry pipeline. The endpoint switch brings Rust into parity with the other 4 SDKs, so adoption is measurable consistently across the language matrix.
-- **Heartbeat payload expanded** to match the cross-SDK shape: `sdk`, `sdk_version`, `os`, `arch`, `runtime_version`, `deployment_mode`, `endpoint_type` (classification only — never the raw URL, per issue #1525), `instance_id`, and `stream` (sandbox-mode clients only). The 7-day per-machine cadence and stamp-on-delivery semantics are unchanged.
-- **`AXONFLOW_TELEMETRY=off` is the SOLE opt-out path.** There is no programmatic disable on the SDK config — same single-lever pattern as HashiCorp checkpoint, Docker, Datadog Agent. `DO_NOT_TRACK` is intentionally NOT honored (host CLIs commonly inherit it, making it an unreliable expression of AxonFlow-scoped intent).
-
-### Decision explainability (carried forward)
-
-- **`client.explain_decision(decision_id)`** — fetches the structured `DecisionExplanation` for a previously-made policy decision. Implements the ADR-043 contract: matched policies, risk level, override availability, historical hit count, and tool signature. New `examples/explain_decision/` shows the end-to-end pattern.
+- **`client.explain_decision(decision_id)`** carried forward — fetches the structured `DecisionExplanation` for a previously-made policy decision (matched policies, risk level, override availability, historical hit count, tool signature). New `examples/explain_decision/` shows the end-to-end pattern.
 
 ### Fixed
 
-- **URL-encoding parity with the other SDKs.** Path parameters (connector_id, plan_id, decision_id) were percent-encoded with `NON_ALPHANUMERIC`, which over-escapes the RFC-3986 unreserved characters `_`, `-`, `.`, `~`. Connector IDs like `amadeus-travel` were going on the wire as `amadeus%2Dtravel` and decision IDs like `dec_wf1_step2` would have gone as `dec%5Fwf1%5Fstep2`. Gorilla mux's permissive percent-decoding masked the bug on the platform side, but the wire form was wrong and any stricter router would 404. Replaced with a path-segment encode set matching Go's `url.PathEscape` semantics.
+- **URL-encoding parity with the other SDKs.** Path parameters (`connector_id`, `plan_id`, `decision_id`) were percent-encoded with `NON_ALPHANUMERIC`, which over-escapes the RFC-3986 unreserved characters `_`, `-`, `.`, `~`. Connector IDs like `amadeus-travel` were going on the wire as `amadeus%2Dtravel` — wrong wire form that stricter routers would 404. Replaced with a path-segment encode set matching Go's `url.PathEscape` semantics.
 
-### Telemetry payload (v1 schema)
+### Telemetry
 
-- New heartbeat fields: `telemetry_type: "sdk"`, `deployment_mode` aligned to `self_hosted | community_saas | unknown` via the new `classify_deployment_mode` (host + `AXONFLOW_TRY=1` override).
-- `deployment_mode` no longer derives from `Mode` — the dimension reflects deployment topology only; `Mode::Sandbox` keeps tagging via `stream`.
+- **Heartbeat endpoint moves to central checkpoint** (`https://checkpoint.getaxonflow.com/v1/ping`). Pre-v0.2 the Rust SDK pinged the local agent — useful for proxy debugging but invisible to the central pipeline. Now in parity with the other four SDKs.
+- **`AXONFLOW_TELEMETRY=off` is the sole opt-out** (no programmatic disable; `DO_NOT_TRACK` intentionally NOT honored). Heartbeat payload expanded to the cross-SDK v1 shape (`telemetry_type`, `deployment_mode`, `endpoint_type`, `instance_id`, `stream`); sandbox clients tag `stream="sandbox"`. 7-day per-machine cadence + stamp-on-delivery unchanged.
 
 ## [0.1.0] - 2026-05-05
 
