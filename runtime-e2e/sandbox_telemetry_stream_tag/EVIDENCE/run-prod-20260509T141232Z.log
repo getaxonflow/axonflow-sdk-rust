@@ -1,0 +1,26 @@
+=== smoke: prod ===
+checkpoint_url=https://checkpoint.getaxonflow.com/v1/ping
+log_group=/aws/lambda/prod-axonflow-checkpoint
+instance_id=rt-prod-20260509T141232Z
+t0_ms=1778335947000
+
+--- cargo run ---
+   Compiling axonflow-sdk-rust v0.2.0 (/Users/saurabhjain/Development/axonflow-sdk-rust)
+   Compiling smoke-prod v0.0.0 (/private/var/folders/1j/k8zxr75912v4rkh3cwctxpph0000gn/T/tmp.0Cycck0ZZM)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.23s
+     Running `target/debug/smoke-prod`
+done
+
+--- waiting 10s for CW delivery ---
+
+--- CW filter: event_stored instance_id=rt-prod-20260509T141232Z ---
+
+--- AUDIT ROW (matched 14:12:44 of this run) ---
+2026/05/09 14:12:44 [audit] event_stored correlation_id=9874e593-8a1c-4088-9236-7be5a58c4582 api_gw_request_id=d079b061-7af1-4dfd-8e88-b1b780baec5c instance_id=7b819d78-eb23-48ad-9878-adeb237b819d sdk=rust/0.2.0 source=external stream=sandbox ip_origin=Ziggo Consumers
+
+--- 3-RULE DoD verdict: PASS ---
+✓ sdk=rust/0.2.0  (PR #2012 ValidSDKs allowlist deployed)
+✓ stream=sandbox  (PR #2005 stream allowlist deployed)
+✓ event_stored    (DDB write confirmed via [audit] line)
+
+Note: SDK populates `instance_id` with auto-generated UUID, not the `AxonFlowConfig::sandbox(client_id, ...)` string. Match is by timestamp + correlation_id.
