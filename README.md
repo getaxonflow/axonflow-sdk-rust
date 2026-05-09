@@ -110,9 +110,13 @@ Then use `cargo run --example <name>` to execute an example:
     ```bash
     cargo run --example planning
     ```
-*   **Invisible Governance (Interceptors)**:
+*   **Invisible Governance (Interceptors — OpenAI)**:
     ```bash
     cargo run --example interceptors
+    ```
+*   **Invisible Governance (Interceptors — Anthropic)**:
+    ```bash
+    cargo run --example anthropic_interceptor
     ```
 *   **Decision Explainability** (ADR-043):
     ```bash

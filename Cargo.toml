@@ -48,6 +48,10 @@ name = "interceptors"
 path = "examples/interceptors/main.rs"
 
 [[example]]
+name = "anthropic_interceptor"
+path = "examples/anthropic_interceptor/main.rs"
+
+[[example]]
 name = "explain_decision"
 path = "examples/explain_decision/main.rs"
 

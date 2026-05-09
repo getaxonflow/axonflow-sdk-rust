@@ -1,0 +1,21 @@
+=== Runtime proof: anthropic_interceptor against live community stack ===
+Run UTC: 2026-05-09T12:38:49Z
+SDK branch: pr26/rebase (eca638d)
+
+--- Agent /health summary ---
+{"service":"axonflow-agent","version":"1.0.0","tier":"community","status":"healthy"}
+
+--- Orchestrator /health summary ---
+{"service":"axonflow-orchestrator","version":"1.0.0","status":"healthy"}
+
+--- Example: cargo run --example anthropic_interceptor ---
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running `target/debug/examples/anthropic_interceptor`
+Initializing AxonFlow Anthropic Interceptor example...
+
+Executing governed request via Anthropic interceptor...
+  [Underlying Client] Calling Anthropic Messages API for model: claude-3-5-sonnet-latest
+✓ Request succeeded: msg_01ABC
+
+--- Exit code: 0 ---
+PASS
