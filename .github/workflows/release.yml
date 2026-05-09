@@ -130,20 +130,22 @@ jobs:
         run: cargo publish
 
       - name: Verify version is live on crates.io
-        # Poll the index up to ~3 minutes (12 × 15s). v0.1.0 race showed that
-        # 30s isn't always enough for propagation, even though `cargo publish`
-        # had already returned success. Polling instead of sleeping gives the
-        # fastest exit once it's live.
+        # Poll the API up to ~7.5 minutes (30 × 15s). v0.1.0 needed >30s; v0.2.0
+        # took ~3-5 minutes (workflow run 25604826136 polled 3 min and false-failed
+        # while the version was already created in the crates.io DB but the public
+        # API endpoint was still serving a cached 404). 7.5 min covers the
+        # observed propagation envelope with headroom; polling instead of sleeping
+        # gives the fastest exit once it's live.
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
-          for i in $(seq 1 12); do
+          for i in $(seq 1 30); do
             if curl -sf "https://crates.io/api/v1/crates/axonflow-sdk-rust/${VERSION}" > /dev/null; then
               echo "✅ axonflow-sdk-rust@${VERSION} is live on crates.io (after ${i} attempt(s))"
               exit 0
             fi
-            echo "Waiting for crates.io propagation… (attempt ${i}/12)"
+            echo "Waiting for crates.io propagation… (attempt ${i}/30)"
             sleep 15
           done
-          echo "::error::axonflow-sdk-rust@${VERSION} not found on crates.io after 3 minutes."
+          echo "::error::axonflow-sdk-rust@${VERSION} not found on crates.io after 7.5 minutes."
           echo "::error::cargo publish succeeded earlier in this job — check https://crates.io/crates/axonflow-sdk-rust manually before re-running."
           exit 1
