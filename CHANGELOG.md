@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-05-09 — Decision history API + central telemetry parity
+## [0.2.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision + Anthropic interceptor + telemetry simplification
 
 **Preview release.** The headline feature is the new decision-history client API
 (`list_decisions`) plus the `explain_decision` example, both bringing Rust to
