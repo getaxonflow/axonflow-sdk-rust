@@ -19,9 +19,11 @@ on:
 permissions:
   contents: read
 
+# PR rebases cancel orphans by PR#; push-to-main runs each get a unique SHA
+# group so they never queue or cancel each other.
 concurrency:
-  group: integration-${{ github.ref }}
-  cancel-in-progress: true
+  group: integration-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   AXONFLOW_TELEMETRY: 'off'
