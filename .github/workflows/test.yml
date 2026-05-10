@@ -13,9 +13,11 @@ env:
   AXONFLOW_TELEMETRY: 'off'
   CARGO_TERM_COLOR: always
 
+# PR rebases cancel orphans by PR#; push-to-main runs each get a unique SHA
+# group so they never queue or cancel each other.
 concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
+  group: test-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fmt:
