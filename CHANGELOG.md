@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-19 — `X-Axonflow-Client` + `X-Client-ID` headers on every outbound request (v9 identity)
+
+**Companion release to the v9 identity cleanup on the platform (Epic #2230).**
+Two header additions:
+
+### Added
+
+- **`X-Axonflow-Client: sdk-rust/<version>` header (ADR-050 §4).** This
+ was MISSING in v0.2.0 — a pre-existing gap relative to the four stable
+ SDKs. Every governed request now carries it so the agent can derive
+ request scope (sdk) and validate against the token's aud.scope via
+ `HasScope()`. Sourced from `CARGO_PKG_VERSION`; no env override (the
+ consumer doesn't get to spoof its own client identity to the agent).
+- **`X-Client-ID: <effective_client_id>` header (v9 identity).** Value
+ matches the SDK's Basic Auth username — smart default `community`
+ when no `client_id` is configured. Server-side identity decisions no
+ longer need to re-decode Basic Auth. The agent's `apiAuthMiddleware`
+ overwrites the header with its own auth-derived value, so caller-
+ supplied values are harmless (no spoofing surface).
+
+Both headers are set in `AxonFlowClient::new` (`src/client.rs`) on the
+shared `HeaderMap` that both `http_client` and `map_http_client` reuse,
+so every endpoint picks them up.
+
+### Compatibility
+
+- Backward-compatible against v8 and v9 platforms: v8 agents ignore the
+ unknown header; v9 agents derive identity from Basic Auth regardless.
+- No SDK config changes. No removed fields. No changed defaults.
+
 ## [0.2.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision + Anthropic interceptor + telemetry simplification
 
 **Preview release.** The headline feature is the new decision-history client API
