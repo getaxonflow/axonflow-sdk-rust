@@ -76,6 +76,15 @@ impl AxonFlowClient {
             "User-Agent",
             HeaderValue::from_static(concat!("axonflow-sdk-rust/", env!("CARGO_PKG_VERSION"))),
         );
+        // ADR-050 §4: every governed request to the agent carries
+        // X-Axonflow-Client so the agent can derive request scope (sdk)
+        // and validate against the token's aud.scope via HasScope().
+        // Sourced from CARGO_PKG_VERSION; no env override (the consumer
+        // doesn't get to spoof its own client identity to the agent).
+        headers.insert(
+            "X-Axonflow-Client",
+            HeaderValue::from_static(concat!("sdk-rust/", env!("CARGO_PKG_VERSION"))),
+        );
 
         // HTTP Basic auth: "Basic base64(client_id:client_secret)".
         // When neither is configured, default to the community tenant —
@@ -89,6 +98,14 @@ impl AxonFlowClient {
         let basic_value = format!("Basic {}", basic_credentials);
         if let Ok(val) = HeaderValue::from_str(&basic_value) {
             headers.insert(AUTHORIZATION, val);
+        }
+
+        // X-Client-ID (v9): server-side identity decisions don't have to
+        // re-decode Basic auth. The agent's apiAuthMiddleware overwrites
+        // the header with its auth-derived value, so caller-supplied
+        // values are harmless (no spoofing surface).
+        if let Ok(val) = HeaderValue::from_str(&basic_id) {
+            headers.insert("X-Client-ID", val);
         }
 
         // Enterprise license key — sent only when configured.
