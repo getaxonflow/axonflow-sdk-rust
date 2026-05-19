@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-20 — `runtime-e2e/x-client-id/` parity with the other 4 SDKs
+
+**Patch release — test infrastructure only.** No SDK code changes; pure
+parity work for the v9 identity rollout (Epic #2230, workstream B).
+
+### Added
+
+- **`runtime-e2e/x-client-id/`** runner — bash entry point + Rust
+ helper crate. Mirrors the Go/Python/TS/Java SDKs' `runtime-e2e/x-client-id/`
+ directories shipped in workstream B. Brings up the public community
+ docker-compose stack, then runs an in-process forwarding-proxy helper
+ that captures the SDK's outbound HTTP headers off the wire and asserts:
+ `X-Client-ID == AXONFLOW_TENANT_ID`, `X-Axonflow-Client` starts with
+ `sdk-rust/`, `Authorization` starts with `Basic `, and `X-Tenant-ID`
+ is absent.
+
+This is the wire-level companion to `tests/x_client_id_header_test.rs`
+— which uses `wiremock` and is necessary but not sufficient (it can't
+catch contract drift between the SDK and the live community-stack
+agent in the same PR that causes it).
+
 ## [0.3.0] - 2026-05-19 — `X-Axonflow-Client` + `X-Client-ID` headers on every outbound request (v9 identity)
 
 **Companion release to the v9 identity cleanup on the platform (Epic #2230).**

@@ -1,0 +1,14 @@
+[package]
+name = "x-client-id-helper"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axonflow-sdk-rust = { path = "../../.." }
+tokio = { version = "1.52", features = ["full"] }
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+
+[[bin]]
+name = "x-client-id-helper"
+path = "src/main.rs"
