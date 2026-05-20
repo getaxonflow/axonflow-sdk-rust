@@ -377,6 +377,51 @@ async fn test_401_not_retried_issue_2275() {
     assert!(result.is_err(), "401 must propagate as an error");
 }
 
+// Companion to `test_401_not_retried_issue_2275` — locks in the OTHER
+// direction of the retry allowlist: 429 (rate limit) MUST trigger retry
+// up to `max_attempts`. Without this, a future refactor that drops
+// `*status != 429` from `execute_with_retry` would silently make every
+// 4xx terminal, breaking the rate-limit retry contract; the 401-not-
+// retried test alone wouldn't catch that flip (401 stays terminal
+// either way). `.expect(3)` makes wiremock fail the test (panic on
+// Drop) if the SDK fails to retry the documented number of times.
+#[tokio::test]
+async fn test_429_is_retried_allowlist_contract() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let config = AxonFlowConfig {
+        endpoint: server.uri(),
+        mode: Mode::Sandbox, // Disable fail-open so 429 surfaces as Err after exhausting retries
+        retry: RetryConfig {
+            enabled: true,
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+        },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+
+    let result = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await;
+
+    assert!(
+        result.is_err(),
+        "429 should propagate as an error after exhausting all retry attempts"
+    );
+}
+
 #[tokio::test]
 async fn test_list_connectors() {
     let server = MockServer::start().await;

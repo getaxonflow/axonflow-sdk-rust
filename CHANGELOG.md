@@ -16,10 +16,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  where a customer's misconfigured deployment caused a tight 401 retry
  loop against community-saas (~30 401/hour from a single source IP).
  Rust SDK was already safe — 401 falls through the early `return Err(e)`
- path in `src/client.rs:517-525` because it isn't in the
+ path in `src/client.rs:560-565` because it isn't in the
  `{429, 402, 403}` retry-allowlist — but there was no explicit test for
  the contract until now. Mutation-tested: adding `401` to the allowlist
  fails the test, confirming the assertion isn't tautological.
+- **`test_429_is_retried_allowlist_contract`** companion regression
+ test — locks in the OTHER direction of the allowlist: that HTTP 429
+ (rate limit) DOES trigger retries up to `max_attempts`. Without this,
+ a future refactor dropping `*status != 429` from `execute_with_retry`
+ would silently make all 4xx terminal — breaking the rate-limit retry
+ contract — and `test_401_not_retried_issue_2275` alone wouldn't catch
+ it (401 stays terminal either way). Together the two tests bracket
+ the allowlist boundary. Mutation-tested: deleting the `*status != 429`
+ clause fails the test (wiremock panics on Drop because the mock is
+ only called once instead of `max_attempts` times).
+
+### Documentation
+
+- **Rustdoc on `execute_with_retry`** (`src/client.rs:532`) describing
+ the retry contract — which status codes retry (5xx + 429), which are
+ terminal (401 + everything else 4xx outside the allowlist) — citing
+ issue [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
+ and CHANGELOG.md for history.
+- **Clarifying comment above the retry-allowlist** explaining that
+ 402/403 are handled as success responses in `execute_request`
+ (`src/client.rs:586`) and never propagate to `execute_with_retry` as
+ errors, so the `*status != 402` / `*status != 403` clauses in the
+ allowlist are intentional belt-and-suspenders defense for any future
+ refactor of `execute_request` that converts 402/403 back to `Err`.
 
 ## [0.3.1] - 2026-05-20 — `runtime-e2e/x-client-id/` parity with the other 4 SDKs
 
