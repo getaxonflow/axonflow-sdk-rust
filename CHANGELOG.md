@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`test_401_not_retried_issue_2275`** regression test in
+ `tests/integration_test.rs` — locks in that HTTP 401 responses are
+ terminal in `execute_with_retry` and never trigger a retry. Backstops
+ issue [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
+ where a customer's misconfigured deployment caused a tight 401 retry
+ loop against community-saas (~30 401/hour from a single source IP).
+ Rust SDK was already safe — 401 falls through the early `return Err(e)`
+ path in `src/client.rs:517-525` because it isn't in the
+ `{429, 402, 403}` retry-allowlist — but there was no explicit test for
+ the contract until now. Mutation-tested: adding `401` to the allowlist
+ fails the test, confirming the assertion isn't tautological.
+
 ## [0.3.1] - 2026-05-20 — `runtime-e2e/x-client-id/` parity with the other 4 SDKs
 
 **Patch release — test infrastructure only.** No SDK code changes; pure
