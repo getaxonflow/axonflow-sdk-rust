@@ -338,6 +338,45 @@ async fn test_retry_logic() {
     assert!(result.is_err());
 }
 
+// Regression test for issue #2275: 401 must be terminal — the SDK MUST
+// NOT retry an auth failure, because retrying with the same invalid token
+// just compounds the storm on the agent. `.expect(1)` makes wiremock fail
+// the test (panic on Drop) if the SDK ever calls the endpoint more than
+// once for the same auth failure.
+#[tokio::test]
+async fn test_401_not_retried_issue_2275() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config = AxonFlowConfig {
+        endpoint: server.uri(),
+        mode: Mode::Sandbox, // Disable fail-open so 401 surfaces as Err
+        retry: RetryConfig {
+            enabled: true,
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+        },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+
+    let result = client
+        .proxy_llm_call("user", "query", "chat", HashMap::new())
+        .await;
+
+    assert!(result.is_err(), "401 must propagate as an error");
+}
+
 #[tokio::test]
 async fn test_list_connectors() {
     let server = MockServer::start().await;
