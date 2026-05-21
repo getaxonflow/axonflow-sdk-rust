@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`org_id` field in the telemetry heartbeat body (v9.1 preflight, #2277).**
- Brings Rust SDK telemetry up to parity with the platform's
- `startup_telemetry.go` emitter — every heartbeat now identifies which
- deployment-organization emitted it. Two sources in precedence order:
+- **`org_id` field in the telemetry heartbeat body.** Brings the Rust
+ SDK telemetry up to parity with the other four SDKs and the platform —
+ every heartbeat now identifies which deployment-organization emitted
+ it. Two sources in precedence order:
  1. The `ORG_ID` env var when set (the operator's explicit configuration
     on self-hosted deployments, or the `cs_<uuid>` tenant identifier on
     Community SaaS).
@@ -20,107 +20,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
  Exposed as `axonflow_sdk_rust::heartbeat::telemetry_org_id()` and
  `axonflow_sdk_rust::heartbeat::ORG_ID_LOCAL_DEV_SENTINEL`. Always
- emitted. The receiver already accepts the field with `omitempty` for
- backward compat with pre-v0.4 SDKs that don't send it. Honors
- `AXONFLOW_TELEMETRY=off` like every other heartbeat field. See
- `axonflow-landing/content/privacy.html` for the customer-facing
- commitment that covers this field.
-
-- **`test_401_not_retried_issue_2275`** regression test in
- `tests/integration_test.rs` — locks in that HTTP 401 responses are
- terminal in `execute_with_retry` and never trigger a retry. Backstops
- issue [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
- where a customer's misconfigured deployment caused a tight 401 retry
- loop against community-saas (~30 401/hour from a single source IP).
- Rust SDK was already safe — 401 falls through the early `return Err(e)`
- path in `src/client.rs:560-565` because it isn't in the
- `{429, 402, 403}` retry-allowlist — but there was no explicit test for
- the contract until now. Mutation-tested: adding `401` to the allowlist
- fails the test, confirming the assertion isn't tautological.
-- **`test_429_is_retried_allowlist_contract`** companion regression
- test — locks in the OTHER direction of the allowlist: that HTTP 429
- (rate limit) DOES trigger retries up to `max_attempts`. Without this,
- a future refactor dropping `*status != 429` from `execute_with_retry`
- would silently make all 4xx terminal — breaking the rate-limit retry
- contract — and `test_401_not_retried_issue_2275` alone wouldn't catch
- it (401 stays terminal either way). Together the two tests bracket
- the allowlist boundary. Mutation-tested: deleting the `*status != 429`
- clause fails the test (wiremock panics on Drop because the mock is
- only called once instead of `max_attempts` times).
+ emitted; older receivers ignore the field cleanly for backward compat.
+ Honors `AXONFLOW_TELEMETRY=off` like every other heartbeat field. See
+ [getaxonflow.com/privacy/](https://getaxonflow.com/privacy/) for the
+ customer-facing commitment that covers this field.
+- **Regression tests around the retry-allowlist contract.** Two new
+ integration tests bracket the retry boundary so a future refactor
+ can't silently change either side: HTTP 401 is terminal (no retries
+ on bad/expired credentials, preventing the storm pattern customers
+ had observed against the audit endpoint); HTTP 429 keeps triggering
+ retries up to `max_attempts` so rate-limit handling remains intact.
 
 ### Changed
 
 - **Telemetry-enabled log line** softened from "Anonymous telemetry
- enabled" to "Telemetry enabled" to stay coherent with the v9.1
- `org_id` addition (the operator-supplied `ORG_ID` on self-hosted is
- not anonymized; only the `instance_id` and `cs_<uuid>` Community SaaS
- identifier remain anonymous-by-design). README "Telemetry" section
- and the `src/heartbeat.rs` module docstring softened similarly.
+ enabled" to "Telemetry enabled" to stay coherent with the `org_id`
+ addition — the operator-supplied `ORG_ID` on self-hosted is not
+ anonymized; only the `instance_id` and `cs_<uuid>` Community SaaS
+ identifier remain anonymous-by-design.
 
 ### Documentation
 
-- **Rustdoc on `execute_with_retry`** (`src/client.rs:532`) describing
- the retry contract — which status codes retry (5xx + 429), which are
- terminal (401 + everything else 4xx outside the allowlist) — citing
- issue [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
- and CHANGELOG.md for history.
-- **Clarifying comment above the retry-allowlist** explaining that
- 402/403 are handled as success responses in `execute_request`
- (`src/client.rs:586`) and never propagate to `execute_with_retry` as
- errors, so the `*status != 402` / `*status != 403` clauses in the
- allowlist are intentional belt-and-suspenders defense for any future
- refactor of `execute_request` that converts 402/403 back to `Err`.
+- **Rustdoc on the retry executor** documents which status codes retry
+ (5xx + 429) and which are terminal (401 and everything else 4xx
+ outside the allowlist), so customers who wrap the SDK in their own
+ retry middleware know which classes to exclude.
+- **Clarifying comment above the retry-allowlist** explains that 402 /
+ 403 are handled as success responses in the request executor and
+ never propagate to the retry path as errors, so the `*status != 402`
+ / `*status != 403` clauses in the allowlist are intentional defense
+ against any future refactor that converts 402/403 back to errors.
+
+### Tracking
+
+- [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
+- [#2277](https://github.com/getaxonflow/axonflow-enterprise/issues/2277)
 
 ## [0.3.1] - 2026-05-20 — `runtime-e2e/x-client-id/` parity with the other 4 SDKs
 
-**Patch release — test infrastructure only.** No SDK code changes; pure
-parity work for the v9 identity rollout (Epic #2230, workstream B).
+Patch release — test infrastructure only. No SDK code changes; pure
+parity work for the v9 identity rollout.
 
 ### Added
 
-- **`runtime-e2e/x-client-id/`** runner — bash entry point + Rust
- helper crate. Mirrors the Go/Python/TS/Java SDKs' `runtime-e2e/x-client-id/`
- directories shipped in workstream B. Brings up the public community
+- **`runtime-e2e/x-client-id/`** runner — bash entry point plus a Rust
+ helper crate. Mirrors the Go / Python / TypeScript / Java SDKs'
+ `runtime-e2e/x-client-id/` directories. Brings up the public community
  docker-compose stack, then runs an in-process forwarding-proxy helper
  that captures the SDK's outbound HTTP headers off the wire and asserts:
  `X-Client-ID == AXONFLOW_TENANT_ID`, `X-Axonflow-Client` starts with
  `sdk-rust/`, `Authorization` starts with `Basic `, and `X-Tenant-ID`
- is absent.
+ is absent. This is the wire-level companion to the unit test
+ (`tests/x_client_id_header_test.rs`), which uses `wiremock` and is
+ necessary but not sufficient — it can't catch contract drift between
+ the SDK and the live community-stack agent in the same PR that causes
+ it.
 
-This is the wire-level companion to `tests/x_client_id_header_test.rs`
-— which uses `wiremock` and is necessary but not sufficient (it can't
-catch contract drift between the SDK and the live community-stack
-agent in the same PR that causes it).
+### Tracking
+
+- [#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230)
 
 ## [0.3.0] - 2026-05-19 — `X-Axonflow-Client` + `X-Client-ID` headers on every outbound request (v9 identity)
 
-**Companion release to the v9 identity cleanup on the platform (Epic #2230).**
-Two header additions:
+Companion release to the v9 identity cleanup on the platform. Two
+header additions.
 
 ### Added
 
-- **`X-Axonflow-Client: sdk-rust/<version>` header (ADR-050 §4).** This
- was MISSING in v0.2.0 — a pre-existing gap relative to the four stable
- SDKs. Every governed request now carries it so the agent can derive
- request scope (sdk) and validate against the token's aud.scope via
- `HasScope()`. Sourced from `CARGO_PKG_VERSION`; no env override (the
- consumer doesn't get to spoof its own client identity to the agent).
-- **`X-Client-ID: <effective_client_id>` header (v9 identity).** Value
- matches the SDK's Basic Auth username — smart default `community`
- when no `client_id` is configured. Server-side identity decisions no
- longer need to re-decode Basic Auth. The agent's `apiAuthMiddleware`
- overwrites the header with its own auth-derived value, so caller-
- supplied values are harmless (no spoofing surface).
+- **`X-Axonflow-Client: sdk-rust/<version>` header.** This was missing
+ in v0.2.0 — a pre-existing gap relative to the four stable SDKs.
+ Every governed request now carries it so the platform can derive
+ request scope (sdk) and validate against the token's audience scope.
+ Sourced from `CARGO_PKG_VERSION`; no env override (the consumer
+ doesn't get to spoof its own client identity to the platform).
+- **`X-Client-ID: <effective_client_id>` header.** Value matches the
+ SDK's Basic Auth username — smart default `community` when no
+ `client_id` is configured. Server-side identity decisions no longer
+ need to re-decode Basic Auth. The platform's auth middleware
+ overwrites the header with its own auth-derived value, so
+ caller-supplied values are harmless (no spoofing surface).
 
-Both headers are set in `AxonFlowClient::new` (`src/client.rs`) on the
-shared `HeaderMap` that both `http_client` and `map_http_client` reuse,
-so every endpoint picks them up.
+Both headers are set on the shared HTTP client header map at
+construction time so every endpoint picks them up.
 
 ### Compatibility
 
 - Backward-compatible against v8 and v9 platforms: v8 agents ignore the
  unknown header; v9 agents derive identity from Basic Auth regardless.
 - No SDK config changes. No removed fields. No changed defaults.
+
+### Tracking
+
+- [#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230)
 
 ## [0.2.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision + Anthropic interceptor + telemetry simplification
 
