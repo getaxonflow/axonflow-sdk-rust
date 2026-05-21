@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`org_id` field in the telemetry heartbeat body (v9.1 preflight, #2277).**
+ Brings Rust SDK telemetry up to parity with the platform's
+ `startup_telemetry.go` emitter — every heartbeat now identifies which
+ deployment-organization emitted it. Two sources in precedence order:
+ 1. The `ORG_ID` env var when set (the operator's explicit configuration
+    on self-hosted deployments, or the `cs_<uuid>` tenant identifier on
+    Community SaaS).
+ 2. Otherwise the `local-dev-org` sentinel.
+
+ Exposed as `axonflow_sdk_rust::heartbeat::telemetry_org_id()` and
+ `axonflow_sdk_rust::heartbeat::ORG_ID_LOCAL_DEV_SENTINEL`. Always
+ emitted. The receiver already accepts the field with `omitempty` for
+ backward compat with pre-v0.4 SDKs that don't send it. Honors
+ `AXONFLOW_TELEMETRY=off` like every other heartbeat field. See
+ `axonflow-landing/content/privacy.html` for the customer-facing
+ commitment that covers this field.
+
 - **`test_401_not_retried_issue_2275`** regression test in
  `tests/integration_test.rs` — locks in that HTTP 401 responses are
  terminal in `execute_with_retry` and never trigger a retry. Backstops
@@ -30,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  the allowlist boundary. Mutation-tested: deleting the `*status != 429`
  clause fails the test (wiremock panics on Drop because the mock is
  only called once instead of `max_attempts` times).
+
+### Changed
+
+- **Telemetry-enabled log line** softened from "Anonymous telemetry
+ enabled" to "Telemetry enabled" to stay coherent with the v9.1
+ `org_id` addition (the operator-supplied `ORG_ID` on self-hosted is
+ not anonymized; only the `instance_id` and `cs_<uuid>` Community SaaS
+ identifier remain anonymous-by-design). README "Telemetry" section
+ and the `src/heartbeat.rs` module docstring softened similarly.
 
 ### Documentation
 
