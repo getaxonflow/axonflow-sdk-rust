@@ -1,4 +1,4 @@
-//! Anonymous SDK heartbeat — telemetry parity with the Go / Python /
+//! SDK heartbeat — telemetry parity with the Go / Python /
 //! TypeScript / Java SDKs.
 //!
 //! Sends one ping per machine per 7 days to
@@ -48,7 +48,7 @@ const ENDPOINT_TYPE_PRIVATE: &str = "private_network";
 const ENDPOINT_TYPE_REMOTE: &str = "remote";
 const ENDPOINT_TYPE_UNKNOWN: &str = "unknown";
 
-/// Fire-and-forget anonymous heartbeat. Called once per process from
+/// Fire-and-forget heartbeat. Called once per process from
 /// `AxonFlowClient::new`. Internally synchronous on the gating decision
 /// (env-var, stamp file mtime), then spawns a tokio task for the HTTP
 /// POST so the constructor returns promptly.
@@ -239,6 +239,22 @@ fn stream_for_mode(mode: &Mode) -> Option<&'static str> {
     }
 }
 
+/// Sentinel emitted on the telemetry wire when `ORG_ID` is unset — the
+/// default-config Community-mode developer case. See #2277.
+pub const ORG_ID_LOCAL_DEV_SENTINEL: &str = "local-dev-org";
+
+/// Returns the `org_id` value to emit on the next telemetry ping. Reads
+/// `ORG_ID` from the environment (the operator's explicit configuration
+/// for self-hosted deployments, or the `cs_<uuid>` tenant identifier on
+/// Community SaaS) and falls back to [`ORG_ID_LOCAL_DEV_SENTINEL`] when
+/// unset. Always returns a non-empty string. See #2277.
+pub fn telemetry_org_id() -> String {
+    match std::env::var("ORG_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => ORG_ID_LOCAL_DEV_SENTINEL.to_string(),
+    }
+}
+
 fn os_str() -> &'static str {
     std::env::consts::OS
 }
@@ -324,9 +340,13 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
     if let Some(stream) = stream_for_mode(mode) {
         payload.insert("stream".into(), serde_json::Value::from(stream));
     }
+    // v9.1 deployment-organization identifier (#2277). Two sources, precedence
+    // order: ORG_ID env (operator-supplied on self-hosted, or cs_<uuid> on
+    // Community SaaS) or the "local-dev-org" sentinel. Always emitted.
+    payload.insert("org_id".into(), serde_json::Value::from(telemetry_org_id()));
 
     debug!(
-        "[AxonFlow] Anonymous telemetry enabled. Opt out: AXONFLOW_TELEMETRY=off | https://docs.getaxonflow.com/docs/telemetry"
+        "[AxonFlow] Telemetry enabled. Opt out: AXONFLOW_TELEMETRY=off | https://docs.getaxonflow.com/docs/telemetry"
     );
 
     match client.post(&checkpoint_url).json(&payload).send().await {
@@ -471,5 +491,47 @@ mod tests {
         assert!(!telemetry_off());
         std::env::remove_var("AXONFLOW_TELEMETRY");
         assert!(!telemetry_off());
+    }
+
+    // --- v9.1 org_id tests (#2277) ---
+    //
+    // cargo test runs tests in parallel by default; ORG_ID env mutation
+    // races between these four tests without serialization. A process-
+    // global Mutex held for the duration of each test body ensures they
+    // see consistent env state.
+    use std::sync::Mutex;
+    static ORG_ID_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn telemetry_org_id_env_wins() {
+        let _g = ORG_ID_TEST_LOCK.lock().unwrap();
+        std::env::set_var("ORG_ID", "acme-corp");
+        assert_eq!(telemetry_org_id(), "acme-corp");
+        std::env::remove_var("ORG_ID");
+    }
+
+    #[test]
+    fn telemetry_org_id_unset_returns_sentinel() {
+        let _g = ORG_ID_TEST_LOCK.lock().unwrap();
+        std::env::remove_var("ORG_ID");
+        assert_eq!(telemetry_org_id(), ORG_ID_LOCAL_DEV_SENTINEL);
+        assert_eq!(ORG_ID_LOCAL_DEV_SENTINEL, "local-dev-org");
+    }
+
+    #[test]
+    fn telemetry_org_id_empty_falls_through_to_sentinel() {
+        let _g = ORG_ID_TEST_LOCK.lock().unwrap();
+        std::env::set_var("ORG_ID", "");
+        assert_eq!(telemetry_org_id(), ORG_ID_LOCAL_DEV_SENTINEL);
+        std::env::remove_var("ORG_ID");
+    }
+
+    #[test]
+    fn telemetry_org_id_cs_prefixed_passes_through() {
+        let _g = ORG_ID_TEST_LOCK.lock().unwrap();
+        let cs_id = "cs_e3a4b5c6-d7e8-4f90-a1b2-c3d4e5f6a7b8";
+        std::env::set_var("ORG_ID", cs_id);
+        assert_eq!(telemetry_org_id(), cs_id);
+        std::env::remove_var("ORG_ID");
     }
 }
