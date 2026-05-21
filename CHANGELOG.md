@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-20 — `runtime-e2e/x-client-id/` parity + `org_id` in telemetry heartbeat + retry-allowlist regression tests
+
+Patch release. No SDK behavior changes for the X-Client-ID + retry
+path; one additive wire field (`org_id`) on the telemetry heartbeat.
+
 ### Added
 
+- **`runtime-e2e/x-client-id/`** runner — bash entry point plus a Rust
+ helper crate. Mirrors the Go / Python / TypeScript / Java SDKs'
+ `runtime-e2e/x-client-id/` directories. Brings up the public community
+ docker-compose stack, then runs an in-process forwarding-proxy helper
+ that captures the SDK's outbound HTTP headers off the wire and asserts:
+ `X-Client-ID == AXONFLOW_TENANT_ID`, `X-Axonflow-Client` starts with
+ `sdk-rust/`, `Authorization` starts with `Basic `, and `X-Tenant-ID`
+ is absent. This is the wire-level companion to the unit test
+ (`tests/x_client_id_header_test.rs`), which uses `wiremock` and is
+ necessary but not sufficient — it can't catch contract drift between
+ the SDK and the live community-stack agent in the same PR that causes
+ it.
 - **`org_id` field in the telemetry heartbeat body.** Brings the Rust
  SDK telemetry up to parity with the other four SDKs and the platform —
  every heartbeat now identifies which deployment-organization emitted
@@ -51,35 +68,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  / `*status != 403` clauses in the allowlist are intentional defense
  against any future refactor that converts 402/403 back to errors.
 
-### Tracking
-
-- [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
-- [#2277](https://github.com/getaxonflow/axonflow-enterprise/issues/2277)
-
-## [0.3.1] - 2026-05-20 — `runtime-e2e/x-client-id/` parity with the other 4 SDKs
-
-Patch release — test infrastructure only. No SDK code changes; pure
-parity work for the v9 identity rollout.
-
-### Added
-
-- **`runtime-e2e/x-client-id/`** runner — bash entry point plus a Rust
- helper crate. Mirrors the Go / Python / TypeScript / Java SDKs'
- `runtime-e2e/x-client-id/` directories. Brings up the public community
- docker-compose stack, then runs an in-process forwarding-proxy helper
- that captures the SDK's outbound HTTP headers off the wire and asserts:
- `X-Client-ID == AXONFLOW_TENANT_ID`, `X-Axonflow-Client` starts with
- `sdk-rust/`, `Authorization` starts with `Basic `, and `X-Tenant-ID`
- is absent. This is the wire-level companion to the unit test
- (`tests/x_client_id_header_test.rs`), which uses `wiremock` and is
- necessary but not sufficient — it can't catch contract drift between
- the SDK and the live community-stack agent in the same PR that causes
- it.
-
-### Tracking
-
-- [#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230)
-
 ## [0.3.0] - 2026-05-19 — `X-Axonflow-Client` + `X-Client-ID` headers on every outbound request (v9 identity)
 
 Companion release to the v9 identity cleanup on the platform. Two
@@ -108,10 +96,6 @@ construction time so every endpoint picks them up.
 - Backward-compatible against v8 and v9 platforms: v8 agents ignore the
  unknown header; v9 agents derive identity from Basic Auth regardless.
 - No SDK config changes. No removed fields. No changed defaults.
-
-### Tracking
-
-- [#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230)
 
 ## [0.2.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision + Anthropic interceptor + telemetry simplification
 
