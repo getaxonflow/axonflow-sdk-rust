@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.1] - 2026-05-20 — `runtime-e2e/x-client-id/` parity + `org_id` in telemetry heartbeat + retry-allowlist regression tests
+## [0.3.1] - 2026-05-22 — `runtime-e2e/x-client-id/` parity + `org_id` in telemetry heartbeat + retry-allowlist regression tests
 
 Patch release. No SDK behavior changes for the X-Client-ID + retry
 path; one additive wire field (`org_id`) on the telemetry heartbeat.
