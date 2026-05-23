@@ -65,6 +65,9 @@ is no behavior to preserve. The new types and methods are additive;
 no existing public API is changed. Minor version bump 0.3.1 → 0.4.0
 for the new module-level addition.
 
+Requires AxonFlow platform >= 8.1.0 for `notify_url` webhook delivery
+and `Idempotency-Key` request deduplication.
+
 Cross-SDK parity sweep: getaxonflow/axonflow-enterprise#2421.
 
 ## [0.3.1] - 2026-05-22 — `runtime-e2e/x-client-id/` parity + `org_id` in telemetry heartbeat + retry-allowlist regression tests
@@ -90,7 +93,7 @@ path; one additive wire field (`org_id`) on the telemetry heartbeat.
  SDK telemetry up to parity with the other four SDKs and the platform —
  every heartbeat now identifies which deployment-organization emitted
  it. Two sources in precedence order:
- 1. The `ORG_ID` env var when set (the operator's explicit configuration
+ 1. The `ORG_ID` env var when set (the explicit configuration
     on self-hosted deployments, or the `cs_<uuid>` tenant identifier on
     Community SaaS).
  2. Otherwise the `local-dev-org` sentinel.
@@ -112,7 +115,7 @@ path; one additive wire field (`org_id`) on the telemetry heartbeat.
 
 - **Telemetry-enabled log line** softened from "Anonymous telemetry
  enabled" to "Telemetry enabled" to stay coherent with the `org_id`
- addition — the operator-supplied `ORG_ID` on self-hosted is not
+ addition — the configured `ORG_ID` on self-hosted deployments is not
  anonymized; only the `instance_id` and `cs_<uuid>` Community SaaS
  identifier remain anonymous-by-design.
 
