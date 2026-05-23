@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-23 — Full HITL surface (`list` / `get` / `create` / `approve` / `reject` / `stats`)
+
+Cross-SDK parity bring-up for HITL (Human-in-the-Loop) approval
+workflows. Prior to this release the Rust SDK exposed **no** HITL
+methods at all — the four stable SDKs (Python / TS / Go / Java) all
+ship the read + review surface (`list_hitl_queue`, `get_hitl_request`,
+`approve_hitl_request`, `reject_hitl_request`, `get_hitl_stats`),
+plus the new `create_hitl_request` method introduced in v8.2.0 of
+each. This release ports the full surface in one shot so Rust callers
+can implement the full 4-step HITL flow against AxonFlow:
+
+  1. Gate evaluates `require_approval` (via `pre_check` / `check_tool_input`)
+  2. Caller invokes `client.create_hitl_request(...)` to enqueue the row
+  3. Caller polls `client.get_hitl_request(approval_id)` until terminal state
+  4. Caller resumes the agent or denies the call based on the decision
+
+### Added
+
+- **`AxonFlowClient::list_hitl_queue(opts: HITLQueueListOptions) -> HITLQueueListResponse`**
+  with pagination + status/severity filters.
+- **`AxonFlowClient::get_hitl_request(request_id: &str) -> HITLApprovalRequest`**.
+- **`AxonFlowClient::create_hitl_request(input: HITLCreateInput) -> HITLApprovalRequest`.**
+  Required fields: `client_id`, `original_query`, `request_type`.
+  Optional fields cover policy attribution, severity, compliance
+  framework, an expiry override, and the new `notify_url` callback.
+  Server-side `X-Org-ID` / `X-Tenant-ID` headers are derived by the
+  platform's auth middleware from the SDK client's configured
+  credentials — callers do not pass them through this method.
+- **`AxonFlowClient::approve_hitl_request(request_id: &str, review: HITLReviewInput) -> ()`**
+  and the symmetric **`reject_hitl_request`**.
+- **`AxonFlowClient::get_hitl_stats() -> HITLStats`**.
+- **`HITLApprovalRequest` / `HITLCreateInput` / `HITLReviewInput` /
+  `HITLQueueListOptions` / `HITLQueueListResponse` / `HITLStats`** in
+  `axonflow_sdk_rust::types::hitl`, re-exported from the crate root.
+- **`notify_url` field on `HITLCreateInput` and `HITLApprovalRequest`.**
+  Opt-in webhook URL fired after the request reaches a terminal state
+  (approved / rejected / expired / overridden). Pairs with the
+  HMAC-SHA256 `X-AxonFlow-Signature` header on the receiver side.
+  Scheme allowlist (`https://`, plus `http://` for self-hosted
+  local-dev) is enforced server-side; bad schemes surface as
+  `AxonFlowError::ApiError { status: 400, .. }`. Companion platform
+  work in getaxonflow/axonflow-enterprise#2419.
+- 18 contract tests in `src/hitl.rs::tests` covering: list happy path +
+  filter serialization, get happy path + empty-id guard + 404
+  propagation, create happy path + minimal required-fields +
+  bad-`notify_url`-scheme 400 propagation + 401 propagation +
+  connect-failure propagation + the three required-field validation
+  guards, approve + reject path/body shape + empty-id guard, and
+  stats envelope parsing, plus a unit test for the
+  `build_list_query` field-omission contract.
+
+### Compatibility
+
+This is the first Rust SDK release to expose HITL methods, so there
+is no behavior to preserve. The new types and methods are additive;
+no existing public API is changed. Minor version bump 0.3.1 → 0.4.0
+for the new module-level addition.
+
+Cross-SDK parity sweep: getaxonflow/axonflow-enterprise#2421.
+
 ## [0.3.1] - 2026-05-22 — `runtime-e2e/x-client-id/` parity + `org_id` in telemetry heartbeat + retry-allowlist regression tests
 
 Patch release. No SDK behavior changes for the X-Client-ID + retry

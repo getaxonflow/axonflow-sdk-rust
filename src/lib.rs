@@ -3,6 +3,7 @@ pub mod config;
 pub mod decisions;
 pub mod error;
 pub mod heartbeat;
+pub mod hitl;
 pub mod interceptors;
 pub mod types;
 
@@ -18,4 +19,8 @@ pub use types::agent::{
 pub use types::decisions::{
     DecisionExplanation, DecisionSummary, ExplainPolicy, ExplainRule, ListDecisionsOptions,
     RateLimitEnvelope, UpgradeInfo,
+};
+pub use types::hitl::{
+    HITLApprovalRequest, HITLCreateInput, HITLQueueListOptions, HITLQueueListResponse,
+    HITLReviewInput, HITLStats,
 };
