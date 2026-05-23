@@ -474,6 +474,21 @@ impl AxonFlowClient {
         Self::check_status(resp).await
     }
 
+    /// Crate-internal POST that serializes `body` as JSON and translates
+    /// non-2xx into [`AxonFlowError::ApiError`] — the symmetric helper to
+    /// [`checked_get`](Self::checked_get). Used by sibling modules
+    /// (e.g. `hitl`) that POST a typed payload and don't need to branch
+    /// on specific status codes before falling back to the generic error
+    /// path.
+    pub(crate) async fn checked_post_json<T: serde::Serialize + ?Sized>(
+        &self,
+        url: &str,
+        body: &T,
+    ) -> Result<reqwest::Response, AxonFlowError> {
+        let resp = self.http_client.post(url).json(body).send().await?;
+        Self::check_status(resp).await
+    }
+
     /// Crate-internal GET that returns the raw response without translating
     /// non-2xx into [`AxonFlowError::ApiError`]. Lets sibling modules branch
     /// on specific status codes (e.g. parse a 429 V1 upgrade envelope into
