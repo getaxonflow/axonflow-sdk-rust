@@ -174,7 +174,8 @@ impl AxonFlowClient {
         request_id: &str,
         review: HITLReviewInput,
     ) -> Result<(), AxonFlowError> {
-        self.review_hitl_request(request_id, "approve", &review).await
+        self.review_hitl_request(request_id, "approve", &review)
+            .await
     }
 
     /// Rejects a pending HITL approval request.
@@ -185,7 +186,8 @@ impl AxonFlowClient {
         request_id: &str,
         review: HITLReviewInput,
     ) -> Result<(), AxonFlowError> {
-        self.review_hitl_request(request_id, "reject", &review).await
+        self.review_hitl_request(request_id, "reject", &review)
+            .await
     }
 
     /// Gets HITL queue dashboard statistics.
@@ -364,7 +366,10 @@ mod tests {
             .await;
 
         let client = make_client(server.uri());
-        let got = client.get_hitl_request("hitl-req-runtime-001").await.unwrap();
+        let got = client
+            .get_hitl_request("hitl-req-runtime-001")
+            .await
+            .unwrap();
         assert_eq!(got.request_id, "hitl-req-runtime-001");
         assert_eq!(got.severity, "high");
         assert_eq!(
@@ -385,9 +390,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/hitl/queue/nope"))
-            .respond_with(
-                ResponseTemplate::new(404).set_body_json(json!({"error": "not found"})),
-            )
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"error": "not found"})))
             .mount(&server)
             .await;
 
@@ -430,13 +433,9 @@ mod tests {
                 request_type: "adk-tool".into(),
                 triggered_policy_id: Some("loan-amount-cap".into()),
                 triggered_policy_name: Some("Loan amount cap".into()),
-                trigger_reason: Some(
-                    "Disbursement above $10k requires manager approval".into(),
-                ),
+                trigger_reason: Some("Disbursement above $10k requires manager approval".into()),
                 severity: Some("high".into()),
-                notify_url: Some(
-                    "https://workflows.example.com/hooks/loan-approve".into(),
-                ),
+                notify_url: Some("https://workflows.example.com/hooks/loan-approve".into()),
                 ..Default::default()
             })
             .await
