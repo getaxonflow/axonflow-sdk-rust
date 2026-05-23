@@ -20,7 +20,7 @@
 # Usage:
 #   ./test.sh
 
-set -uo pipefail
+set -euo pipefail
 
 SDK_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN_TAG=$(date -u +%s)
