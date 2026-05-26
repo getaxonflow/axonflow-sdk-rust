@@ -136,6 +136,35 @@ pub struct AuditResult {
     pub audit_id: String,
 }
 
+/// A single audit log entry from the platform.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct AuditLogEntry {
+    pub id: String,
+    pub request_id: String,
+    pub timestamp: String,
+    pub user_email: String,
+    pub client_id: String,
+    pub tenant_id: String,
+    pub request_type: String,
+    pub query_summary: String,
+    pub success: bool,
+    pub blocked: bool,
+    pub risk_score: f64,
+    pub provider: String,
+    pub model: String,
+    pub tokens_used: i64,
+    pub latency_ms: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_violations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_residency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_basis: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct ConnectorMetadata {
@@ -314,4 +343,114 @@ pub struct CodeArtifact {
     pub unsafe_patterns: usize,
     #[serde(default, deserialize_with = "null_to_default")]
     pub policies_checked: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_log_entry_with_residency_fields_deserializes() {
+        let json = r#"{
+            "id": "audit-001",
+            "request_id": "req-123",
+            "timestamp": "2026-05-26T00:00:00Z",
+            "user_email": "user@example.com",
+            "client_id": "client-1",
+            "tenant_id": "tenant-1",
+            "request_type": "llm_query",
+            "query_summary": "test query",
+            "success": true,
+            "blocked": false,
+            "risk_score": 0.15,
+            "provider": "openai",
+            "model": "gpt-4",
+            "tokens_used": 500,
+            "latency_ms": 120,
+            "policy_violations": [],
+            "data_residency": "id-jakarta",
+            "transfer_basis": "pdp-consent"
+        }"#;
+
+        let entry: AuditLogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.id, "audit-001");
+        assert_eq!(entry.data_residency.as_deref(), Some("id-jakarta"));
+        assert_eq!(entry.transfer_basis.as_deref(), Some("pdp-consent"));
+        assert!(entry.success);
+        assert!(!entry.blocked);
+        assert_eq!(entry.tokens_used, 500);
+    }
+
+    #[test]
+    fn audit_log_entry_without_new_fields_deserializes_backward_compat() {
+        let json = r#"{
+            "id": "audit-002",
+            "request_id": "req-456",
+            "timestamp": "2026-05-26T00:00:00Z",
+            "user_email": "user@example.com",
+            "client_id": "client-1",
+            "tenant_id": "tenant-1",
+            "request_type": "llm_query",
+            "query_summary": "test query",
+            "success": true,
+            "blocked": false,
+            "risk_score": 0.0,
+            "provider": "anthropic",
+            "model": "claude-3",
+            "tokens_used": 100,
+            "latency_ms": 50
+        }"#;
+
+        let entry: AuditLogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.id, "audit-002");
+        assert!(entry.data_residency.is_none());
+        assert!(entry.transfer_basis.is_none());
+        assert!(entry.policy_violations.is_empty());
+        assert!(entry.metadata.is_none());
+    }
+
+    #[test]
+    fn audit_log_entry_empty_optional_fields_omitted_in_serialization() {
+        let entry = AuditLogEntry {
+            id: "audit-003".to_string(),
+            request_id: "req-789".to_string(),
+            success: true,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        // Option<String> fields set to None should be absent
+        assert!(!json.contains("data_residency"));
+        assert!(!json.contains("transfer_basis"));
+        assert!(!json.contains("metadata"));
+        // Empty Vec should be absent (skip_serializing_if = "Vec::is_empty")
+        assert!(!json.contains("policy_violations"));
+    }
+
+    #[test]
+    fn audit_log_entry_with_metadata_round_trips() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "region".to_string(),
+            serde_json::Value::String("ap-southeast-3".to_string()),
+        );
+
+        let entry = AuditLogEntry {
+            id: "audit-004".to_string(),
+            data_residency: Some("id-jakarta".to_string()),
+            transfer_basis: Some("pdp-consent".to_string()),
+            metadata: Some(meta),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: AuditLogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.data_residency.as_deref(), Some("id-jakarta"));
+        assert_eq!(back.transfer_basis.as_deref(), Some("pdp-consent"));
+        assert!(back.metadata.is_some());
+        assert_eq!(
+            back.metadata.unwrap().get("region").unwrap(),
+            &serde_json::Value::String("ap-southeast-3".to_string())
+        );
+    }
 }
