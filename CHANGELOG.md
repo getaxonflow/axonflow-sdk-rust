@@ -5,7 +5,16 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-05-26 — Indonesia PII category + cross-border audit fields
+
+### Added
+
+- **`PolicyCategory` enum** with all policy categories including `PiiIndonesia`
+  (`"pii-indonesia"`). First policies module in the Rust SDK, establishing
+  cross-SDK parity for policy category constants.
+- **`AuditLogEntry` struct** with full audit log fields including
+  `data_residency` and `transfer_basis` for cross-border data transfer
+  logging. Both are `Option<String>` for backward compatibility.
 
 ## [0.4.0] - 2026-05-23 — Full HITL surface (`list` / `get` / `create` / `approve` / `reject` / `stats`)
 

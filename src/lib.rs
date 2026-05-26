@@ -11,10 +11,10 @@ pub use client::AxonFlowClient;
 pub use config::{AxonFlowConfig, CacheConfig, Mode, RetryConfig};
 pub use error::AxonFlowError;
 pub use types::agent::{
-    AuditRequest, AuditResult, BudgetInfo, CancelPlanResponse, ClientRequest, ClientResponse,
-    CodeArtifact, ConnectorHealthStatus, ConnectorInstallRequest, ConnectorMetadata,
-    ConnectorResponse, MediaContent, PlanExecutionResponse, PlanResponse, PlanStep,
-    PolicyEvaluationInfo, PolicyInfo, PolicyMatchInfo, StepResult, TokenUsage,
+    AuditLogEntry, AuditRequest, AuditResult, BudgetInfo, CancelPlanResponse, ClientRequest,
+    ClientResponse, CodeArtifact, ConnectorHealthStatus, ConnectorInstallRequest,
+    ConnectorMetadata, ConnectorResponse, MediaContent, PlanExecutionResponse, PlanResponse,
+    PlanStep, PolicyEvaluationInfo, PolicyInfo, PolicyMatchInfo, StepResult, TokenUsage,
 };
 pub use types::decisions::{
     DecisionExplanation, DecisionSummary, ExplainPolicy, ExplainRule, ListDecisionsOptions,
@@ -24,3 +24,4 @@ pub use types::hitl::{
     HITLApprovalRequest, HITLCreateInput, HITLQueueListOptions, HITLQueueListResponse,
     HITLReviewInput, HITLStats,
 };
+pub use types::policies::PolicyCategory;
