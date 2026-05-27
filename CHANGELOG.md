@@ -161,7 +161,7 @@ Targets AxonFlow platform **v8.5.0**.
   code matching on `"safeguards"` is unaffected and the SDK never rejects a value
   a newer platform may add.
 
-## [0.5.0] - 2026-05-26 — Indonesia PII category + cross-border audit fields
+## [0.5.0] - 2026-05-27 — Indonesia PII category + cross-border audit fields
 
 ### Added
 
