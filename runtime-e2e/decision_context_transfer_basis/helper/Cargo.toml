@@ -1,0 +1,15 @@
+[package]
+name = "decision-context-transfer-basis-helper"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axonflow-sdk-rust = { path = "../../.." }
+tokio = { version = "1.52", features = ["full"] }
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
+serde_json = "1"
+
+[[bin]]
+name = "decision-context-transfer-basis-helper"
+path = "src/main.rs"

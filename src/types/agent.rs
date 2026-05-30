@@ -161,8 +161,30 @@ pub struct AuditLogEntry {
     pub metadata: Option<HashMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_residency: Option<String>,
+    /// Cross-border transfer legal basis under Indonesia UU PDP Pasal 56:
+    /// `adequacy`, `safeguards`, `pasal_56b_dpa`, or `consent`. Surfaced
+    /// verbatim — never auto-translated. See the [`transfer_basis`] module
+    /// constants for the recognized set. The field stays an `Option<String>`
+    /// so the SDK never rejects a value a newer platform may add.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_basis: Option<String>,
+}
+
+/// Cross-border transfer-basis values recognized under Indonesia UU PDP Pasal 56,
+/// for [`AuditLogEntry::transfer_basis`]:
+///
+/// * [`ADEQUACY`](transfer_basis::ADEQUACY) — Pasal 56(a): destination with adequate protection
+/// * [`SAFEGUARDS`](transfer_basis::SAFEGUARDS) — Pasal 56(b): binding legal instrument (generic label)
+/// * [`PASAL_56B_DPA`](transfer_basis::PASAL_56B_DPA) — Pasal 56(b): binding legal instrument, explicit DPA tag
+/// * [`CONSENT`](transfer_basis::CONSENT) — Pasal 56(c): explicit data-subject consent
+///
+/// `safeguards` and `pasal_56b_dpa` are semantic equivalents; the platform
+/// surfaces whichever was recorded at decision time. (platform #2513 / epic #2508)
+pub mod transfer_basis {
+    pub const ADEQUACY: &str = "adequacy";
+    pub const SAFEGUARDS: &str = "safeguards";
+    pub const PASAL_56B_DPA: &str = "pasal_56b_dpa";
+    pub const CONSENT: &str = "consent";
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -451,6 +473,48 @@ mod tests {
         assert_eq!(
             back.metadata.unwrap().get("region").unwrap(),
             &serde_json::Value::String("ap-southeast-3".to_string())
+        );
+    }
+
+    // v0.6.0 (platform #2513): pasal_56b_dpa accepted; existing values kept.
+
+    #[test]
+    fn transfer_basis_constants_wire_values() {
+        assert_eq!(transfer_basis::ADEQUACY, "adequacy");
+        assert_eq!(transfer_basis::SAFEGUARDS, "safeguards");
+        assert_eq!(transfer_basis::PASAL_56B_DPA, "pasal_56b_dpa");
+        assert_eq!(transfer_basis::CONSENT, "consent");
+    }
+
+    #[test]
+    fn audit_log_entry_pasal_56b_dpa_round_trips_verbatim() {
+        let json = r#"{
+            "id": "aud-56b",
+            "timestamp": "2026-05-30T10:00:00Z",
+            "data_residency": "ID",
+            "transfer_basis": "pasal_56b_dpa"
+        }"#;
+        let entry: AuditLogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            entry.transfer_basis.as_deref(),
+            Some(transfer_basis::PASAL_56B_DPA)
+        );
+
+        // never auto-translated to "safeguards"
+        let back: AuditLogEntry =
+            serde_json::from_str(&serde_json::to_string(&entry).unwrap()).unwrap();
+        assert_eq!(back.transfer_basis.as_deref(), Some("pasal_56b_dpa"));
+    }
+
+    #[test]
+    fn audit_log_entry_safeguards_backward_compat() {
+        // Existing v0.5.0-shaped rows using "safeguards" are unaffected by the widening.
+        let json =
+            r#"{"id":"aud-sg","timestamp":"2026-05-26T10:00:00Z","transfer_basis":"safeguards"}"#;
+        let entry: AuditLogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            entry.transfer_basis.as_deref(),
+            Some(transfer_basis::SAFEGUARDS)
         );
     }
 }
