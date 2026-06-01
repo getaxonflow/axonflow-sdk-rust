@@ -57,6 +57,10 @@ pub struct WrappedOpenAIClient<C: OpenAIChatCompleter> {
     client: Arc<C>,
     axonflow: Arc<AxonFlowClient>,
     user_token: String,
+    /// Provider name recorded in the audit trail. Defaults to `"openai"` but
+    /// should be set to the actual provider (e.g. `"azure"`, `"together"`)
+    /// when calling through a proxy or alternative OpenAI-compatible API.
+    provider: String,
 }
 
 impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
@@ -65,7 +69,13 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
             client: Arc::new(client),
             axonflow: Arc::new(axonflow),
             user_token: user_token.into(),
+            provider: "openai".to_string(),
         }
+    }
+
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = provider.into();
+        self
     }
 
     pub async fn create_chat_completion(
@@ -81,7 +91,7 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
             .join("\n");
 
         let mut eval_context = std::collections::HashMap::new();
-        eval_context.insert("provider".to_string(), serde_json::json!("openai"));
+        eval_context.insert("provider".to_string(), serde_json::json!(self.provider));
         eval_context.insert("model".to_string(), serde_json::json!(req.model));
         if let Some(t) = req.temperature {
             eval_context.insert("temperature".to_string(), serde_json::json!(t));
@@ -116,6 +126,7 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
         let request_id = response.request_id.clone();
         let latency_ms = start_time.elapsed().as_millis() as i64;
         let model = req.model.clone();
+        let provider = self.provider.clone();
 
         tokio::spawn(async move {
             if let Some(context_id) = request_id {
@@ -140,14 +151,16 @@ impl<C: OpenAIChatCompleter> WrappedOpenAIClient<C> {
                 let audit_req = AuditRequest {
                     context_id,
                     response_summary: summary,
-                    provider: "openai".to_string(),
+                    provider,
                     model,
                     token_usage,
                     latency_ms,
                     metadata: None,
                 };
 
-                let _ = axonflow.audit_llm_call(&audit_req).await;
+                if let Err(e) = axonflow.audit_llm_call(&audit_req).await {
+                    tracing::warn!("Audit call failed: {e}");
+                }
             }
         });
 

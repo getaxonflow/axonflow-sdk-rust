@@ -15,12 +15,13 @@
 //   reject_hitl_request(request_id, review) -> ()
 //   get_hitl_stats() -> HITLStats
 
-use crate::client::{AxonFlowClient, PATH_SEGMENT};
+use crate::client::AxonFlowClient;
 use crate::error::AxonFlowError;
 use crate::types::hitl::{
     HITLApprovalRequest, HITLCreateInput, HITLQueueListOptions, HITLQueueListResponse,
     HITLReviewInput, HITLStats, HitlItemEnvelope, HitlListEnvelope, HitlStatsEnvelope,
 };
+use crate::PATH_SEGMENT;
 use percent_encoding::utf8_percent_encode;
 
 impl AxonFlowClient {

@@ -72,6 +72,7 @@ pub struct ExplainRule {
 ///   `x-bukuwarung-*`). `None` for pre-v0.6.0 audit rows. (platform #2509)
 /// * `context_truncated` — true when the agent dropped surplus context keys at
 ///   write time.
+#[must_use]
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct DecisionExplanation {
     pub decision_id: String,
@@ -118,6 +119,7 @@ fn is_false(b: &bool) -> bool {
 ///   Python: axonflow-sdk-python/axonflow/decisions.py (DecisionSummary)
 ///   TS:     axonflow-sdk-typescript/src/types/decisions.ts (DecisionSummary)
 ///   Java:   axonflow-sdk-java/src/main/java/com/getaxonflow/sdk/types/DecisionSummary.java
+#[must_use]
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct DecisionSummary {
     pub decision_id: String,

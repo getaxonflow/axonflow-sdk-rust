@@ -20,12 +20,16 @@ serde_json = "1.0"
 thiserror = "2.0"
 moka = { version = "0.12", features = ["future"] }
 tracing = "0.1"
+# TODO: migrate to `time` or `jiff` in the next major version.
+# chrono has known soundness issues and upstream recommends
+# alternatives for new projects (see RUSTSEC advisories).
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 home = "0.5"
 percent-encoding = "2.3"
 base64 = "0.22"
 url = "2.5"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 wiremock = "0.6"
