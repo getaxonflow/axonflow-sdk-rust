@@ -342,12 +342,13 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
             // environments.
             if let Some(stamp_path) = stamp_path {
                 if let Some(parent) = stamp_path.parent() {
-                    let _ = fs::create_dir_all(parent);
+                    let _ = tokio::fs::create_dir_all(parent).await;
                 }
-                let _ = fs::write(
+                let _ = tokio::fs::write(
                     &stamp_path,
                     format!("last_sent={}", chrono::Utc::now().to_rfc3339()),
-                );
+                )
+                .await;
             }
         }
         Ok(resp) => debug!("Telemetry heartbeat rejected by server: {}", resp.status()),

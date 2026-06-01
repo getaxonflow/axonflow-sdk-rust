@@ -63,12 +63,9 @@ impl AxonFlowClient {
         // HTTP Basic auth: "Basic base64(client_id:client_secret)".
         // When neither is configured, default to the community tenant —
         // matches the cross-SDK contract (see axonflow-sdk-go selfhosted_auth_headers_test.go).
-        let basic_id = config
-            .client_id
-            .clone()
-            .unwrap_or_else(|| "community".to_string());
-        let basic_secret = config.client_secret.clone().unwrap_or_default();
-        let basic_credentials = BASE64_STD.encode(format!("{}:{}", basic_id, basic_secret));
+        let basic_id = config.client_id.as_deref().unwrap_or("community");
+        let basic_secret = config.client_secret.as_deref().unwrap_or("");
+        let basic_credentials = BASE64_STD.encode(format!("{basic_id}:{basic_secret}"));
         let basic_value = format!("Basic {}", basic_credentials);
         if let Ok(val) = HeaderValue::from_str(&basic_value) {
             headers.insert(AUTHORIZATION, val);
