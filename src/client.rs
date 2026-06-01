@@ -75,7 +75,7 @@ impl AxonFlowClient {
         // re-decode Basic auth. The agent's apiAuthMiddleware overwrites
         // the header with its auth-derived value, so caller-supplied
         // values are harmless (no spoofing surface).
-        if let Ok(val) = HeaderValue::from_str(&basic_id) {
+        if let Ok(val) = HeaderValue::from_str(basic_id) {
             headers.insert("X-Client-ID", val);
         }
 
