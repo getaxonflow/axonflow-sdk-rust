@@ -5,6 +5,86 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-06-09 — Decision Mode PEP (decide → fulfill → forward)
+
+Adds the SDK analog of `platform/shared/pep` (ADR-056, epic
+getaxonflow/axonflow-enterprise#2563, tracking #2571): a **decide → fulfill →
+forward** Policy Enforcement Point. `decide()` surfaces engine-fulfillable
+`redact_pii` obligations; `fulfill_request()` discharges them by round-tripping
+content through the engine endpoint each obligation names — **never by redacting
+locally**. The SDK carries no redaction logic of its own: there is no regex, no
+pattern table, no masking branch. An obligation the engine cannot discharge
+**fails closed** (`AxonFlowError::ObligationNotFulfillable`) rather than
+forwarding unredacted content.
+
+### Added
+
+- **`AxonFlowClient::decide(DecideRequest) -> DecideResponse`** — `POST
+  /api/v1/decide` using the client's existing HTTP Basic (`org:license`) auth.
+  401 (bad / demo credentials) surfaces as `AxonFlowError::ApiError { status:
+  401, .. }`; a `deny` verdict is returned in the body (HTTP 200), not as an
+  error.
+- **`AxonFlowClient::fulfill_request(&DecideResponse, &str) -> (String, bool)`**
+  — for each request-phase `redact_pii` obligation, POSTs the statement to the
+  obligation's check-input endpoint and returns the engine-redacted content plus
+  whether the engine changed it. **Fails closed** (returns
+  `AxonFlowError::ObligationNotFulfillable`, never the original statement) when:
+  no request-phase fulfillment; `content_types` is non-empty and omits
+  `text/plain`; the endpoint is not the request-redaction path (foreign URLs
+  rejected); the engine call fails / returns non-200; or `redaction_evaluated`
+  is false/absent.
+- **`AxonFlowClient::decide_and_fulfill(DecideRequest) -> (verdict, content,
+  DecideResponse)`** — one-call PEP path. On a non-allow verdict returns the
+  original query (caller blocks anyway); on allow returns engine-redacted
+  content. On an unfulfillable obligation it surfaces the fail-closed error so a
+  caller cannot accidentally forward the unredacted query.
+- **`has_request_redaction(&[Obligation]) -> bool`** free function — branch on
+  whether a verdict carries request-phase redaction work.
+- **PEP types** in `axonflow_sdk_rust::types::pep`, re-exported from the crate
+  root: `DecideRequest`, `DecideResponse`, `Obligation`,
+  `ObligationFulfillment`, `DecisionCallerIdentity`, `DecisionTarget`,
+  `MCPCheckInputRequest`, `MCPCheckInputResponse`, `MCPCheckOutputRequest`,
+  `MCPCheckOutputResponse`. Wire field names are byte-identical with the Go /
+  Python / TypeScript / Java SDKs.
+- **`content_type` field on `MCPCheckInputRequest`**; **`redacted` /
+  `redacted_statement` / `redaction_evaluated` on `MCPCheckInputResponse`**;
+  **`redaction_evaluated` on `MCPCheckOutputResponse`**. All `#[serde(default)]`
+  so older platforms deserialize cleanly (the fail-closed default for
+  `redaction_evaluated` is `false`).
+- **`AxonFlowError::ObligationNotFulfillable(String)`** — the fail-closed signal
+  of the PEP contract. Non-retryable and not fail-open-eligible.
+- **PEP contract constants** (`OBLIGATION_REDACT_PII`, `PHASE_REQUEST` /
+  `PHASE_RESPONSE`, `CONTENT_TYPE_TEXT`, `VERDICT_ALLOW` / `VERDICT_DENY` /
+  `VERDICT_NEEDS_APPROVAL`, `DECIDE_PATH`, `REQUEST_REDACTION_PATH` /
+  `RESPONSE_REDACTION_PATH`, `GATEWAY_CONNECTOR_TAG`).
+- **22 unit tests** in `src/pep.rs::tests` covering decide parse (allow +
+  obligation / deny-in-body / 401), every fail-closed branch (missing
+  request-phase fulfillment, response-phase obligation, unadvertised
+  content-type, foreign endpoint, engine error, `redaction_evaluated` false,
+  `redaction_evaluated` absent), passthrough (no obligation, engine found
+  nothing, non-redact obligation type), `endpoint_path_matches` exact/absolute/
+  foreign, `has_request_redaction`, and `decide_and_fulfill`
+  allow/deny/unfulfillable.
+- **`runtime-e2e/decide_fulfill_obligation/`** — bash runner + Rust helper crate
+  exercising the real SDK against a live enterprise agent (NO mocks): proves
+  decide → allow + obligation; fulfill → engine-masked content where neither
+  `john.doe@example.com` nor `4111111111111111` survives; `decide_and_fulfill`
+  parity; demo creds refused with 401. Mirrors the Python SDK's runner.
+
+### Compatibility
+
+Additive. No existing public API is changed; no removed fields; no changed
+defaults. The new request/response fields are an acknowledged SDK superset of
+the wire contract — older platforms ignore the extra request field and the
+SDK's `#[serde(default)]` keeps response parsing fail-closed when the platform
+predates the redaction fields. Minor version bump 0.6.0 → 0.7.0 (SDK semver is
+decoupled from the platform version).
+
+Requires an AxonFlow platform exposing `POST /api/v1/decide` with Decision Mode
+for the `decide` / `decide_and_fulfill` path; `fulfill_request` requires the
+request-redaction `redact_pii` capability on `/api/v1/mcp/check-input`.
+
+Cross-SDK parity: getaxonflow/axonflow-enterprise#2571.
 ## [0.6.0] - 2026-05-30 — Decision request context + Pasal 56(b) transfer basis
 
 Targets AxonFlow platform **v8.5.0**.
