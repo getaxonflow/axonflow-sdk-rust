@@ -257,8 +257,15 @@ impl AxonFlowClient {
         }
         match (result.redacted, result.redacted_statement) {
             (true, Some(masked)) if !masked.is_empty() => Ok(masked),
+            // FAIL CLOSED on a self-contradictory engine response: redacted=true
+            // with no (or empty) redacted_statement means the engine claims it
+            // masked something but gave us nothing to forward — never fall back
+            // to the unredacted original.
+            (true, _) => Err(AxonFlowError::ObligationNotFulfillable(
+                "engine reported redacted=true but returned no redacted_statement".to_string(),
+            )),
             // Redactor ran and found nothing to mask — forward unchanged.
-            _ => Ok(statement.to_string()),
+            (false, _) => Ok(statement.to_string()),
         }
     }
 
@@ -684,6 +691,29 @@ mod tests {
                 "allowed": true,
                 "redacted": false,
                 "redaction_evaluated": false,
+            })))
+            .mount(&server)
+            .await;
+
+        let client = make_client(server.uri());
+        let err = client
+            .fulfill_request(&allow_with(vec![redact_obligation()]), "secret a@b.com")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AxonFlowError::ObligationNotFulfillable(_)));
+    }
+
+    #[tokio::test]
+    async fn fulfill_fails_closed_when_redacted_true_without_statement() {
+        // Self-contradictory engine response: redacted=true but no
+        // redacted_statement -> must fail closed, never forward the original.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/mcp/check-input"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "allowed": true,
+                "redacted": true,
+                "redaction_evaluated": true,
             })))
             .mount(&server)
             .await;
