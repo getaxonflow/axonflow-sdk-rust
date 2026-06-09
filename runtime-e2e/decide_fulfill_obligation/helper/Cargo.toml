@@ -1,0 +1,13 @@
+[package]
+name = "decide-fulfill-obligation-helper"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axonflow-sdk-rust = { path = "../../.." }
+tokio = { version = "1.52", features = ["full"] }
+
+[[bin]]
+name = "decide-fulfill-obligation-helper"
+path = "src/main.rs"
