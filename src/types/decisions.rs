@@ -52,7 +52,10 @@ pub struct ExplainRule {
 ///   with risk level and overridability.
 /// * `matched_rules` — rule-level detail (optional, populated when the
 ///   upstream engine supports it).
-/// * `decision` — `"allow"` | `"deny"` | `"require_approval"`.
+/// * `decision` — canonical audit verdict `"allowed"` | `"blocked"` |
+///   `"redacted"` | `"needs_approval"` | `"error"` (platform 9.0.0+; pre-9.0.0
+///   used `"allow"` | `"deny"` | `"require_approval"`, see the v8 → v9 migration
+///   guide <https://docs.getaxonflow.com/docs/deployment/v8-to-v9-migration/>).
 /// * `reason` — human-readable reason string.
 /// * `risk_level` — aggregate risk label (`"low"` | `"medium"` | `"high"` | `"critical"`).
 /// * `override_available` — true iff at least one non-critical policy with
@@ -140,9 +143,13 @@ pub struct DecisionSummary {
 /// Optional filters for `AxonFlowClient::list_decisions`.
 ///
 /// Every field is optional — leaving all `None` returns the tier-default
-/// page from the caller's tenant. `since` is RFC3339; `decision` is one of
-/// `"allow"|"deny"|"require_approval"`. `limit` is server-capped per tier;
-/// over-cap requests get a 429 with the V1 upgrade envelope.
+/// page from the caller's tenant. `since` is RFC3339; `decision`, when set, is
+/// one of the canonical audit verdicts
+/// `"allowed"|"blocked"|"redacted"|"needs_approval"|"error"` (platform 9.0.0+);
+/// the pre-9.0.0 values `"allow"|"deny"|"require_approval"` are rejected with
+/// HTTP 400 by 9.0.0 (see the v8 → v9 migration guide
+/// <https://docs.getaxonflow.com/docs/deployment/v8-to-v9-migration/>). `limit`
+/// is server-capped per tier; over-cap requests get a 429 with the V1 upgrade envelope.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ListDecisionsOptions {
     pub since: Option<DateTime<Utc>>,
@@ -186,7 +193,7 @@ mod tests {
         let json = r#"{
             "decision_id": "dec-ctx",
             "timestamp": "2026-05-30T12:00:00Z",
-            "decision": "deny",
+            "decision": "blocked",
             "context": {
                 "x_ai_agent": "refund-bot",
                 "x_session_id": "sess-42",
@@ -215,8 +222,7 @@ mod tests {
 
     #[test]
     fn summary_context_absent_is_none_and_omitted() {
-        let json =
-            r#"{"decision_id":"dec-noctx","timestamp":"2026-05-30T12:00:00Z","decision":"allow"}"#;
+        let json = r#"{"decision_id":"dec-noctx","timestamp":"2026-05-30T12:00:00Z","decision":"allowed"}"#;
         let summary: DecisionSummary = serde_json::from_str(json).unwrap();
         assert!(summary.context.is_none());
         // omitted on the wire (skip_serializing_if), preserving pre-v0.6.0 byte-shape
@@ -228,7 +234,7 @@ mod tests {
         let json = r#"{
             "decision_id": "dec-x",
             "timestamp": "2026-05-30T12:00:00Z",
-            "decision": "deny",
+            "decision": "blocked",
             "reason": "pii",
             "policy_matches": [],
             "context": {"x_ai_agent": "a", "x_session_id": "s"},
@@ -246,7 +252,7 @@ mod tests {
     fn explanation_context_truncated_false_omitted() {
         let exp = DecisionExplanation {
             decision_id: "d".to_string(),
-            decision: "allow".to_string(),
+            decision: "allowed".to_string(),
             ..Default::default()
         };
         let json = serde_json::to_string(&exp).unwrap();
