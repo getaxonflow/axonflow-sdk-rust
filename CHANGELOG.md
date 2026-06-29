@@ -5,6 +5,53 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-06-29 — Performance & reliability hardening
+
+A hygiene and performance pass across the SDK. Behavior on the wire is
+unchanged; the one source-compatibility note is the new `CacheConfig`
+field called out under **Changed** below.
+
+### Added
+
+- **`CacheConfig::max_capacity`** (default `10_000`) — the in-memory response
+  cache is now bounded and evicts least-recently-used entries once full,
+  preventing unbounded memory growth in long-running processes. Set a higher or
+  lower limit to tune the memory/hit-rate trade-off.
+- **`WrappedOpenAIClient::with_provider(provider)`** — a builder method to record
+  the actual upstream provider (e.g. `"azure"`, `"together"`) in the audit
+  trail when calling through a proxy or an OpenAI-compatible API. Defaults to
+  `"openai"`.
+- **`PartialEq` for `AxonFlowError`**, so errors can be compared directly in
+  tests and caller logic.
+- **`#[must_use]`** on `CancelPlanResponse`, `DecisionExplanation`, and
+  `DecisionSummary` to catch accidentally-discarded results at compile time.
+- **Tracing spans** (`#[tracing::instrument]`) on `proxy_llm_call`,
+  `generate_plan`, and `explain_decision` for richer observability.
+
+### Changed
+
+- **Breaking (source-only):** `CacheConfig` gains the `max_capacity` field above.
+  Code that constructs `CacheConfig` with a struct literal must add the field or
+  use `..Default::default()`; code that relies on `CacheConfig::default()` is
+  unaffected.
+- **HTTP connection reuse** — both HTTP clients now enable idle connection
+  pooling and TCP keepalive, reducing connection churn and latency under
+  sustained load.
+- **Non-blocking heartbeat I/O** — the background telemetry heartbeat no longer
+  performs blocking filesystem writes on the async runtime.
+- The audit trail now records the configured provider rather than always
+  reporting `"openai"`.
+- Reduced allocations in request auth-header construction.
+
+### Fixed
+
+- `402`/`403` responses with non-JSON bodies now surface as
+  `AxonFlowError::ApiError` (carrying the status and raw body) instead of a
+  confusing deserialization error.
+- Failures while submitting an audit record are now logged via `tracing::warn`
+  instead of being silently discarded.
+- Telemetry heartbeat instance identifiers now use standard UUIDv4 generation.
+
 ## [0.7.0] - 2026-06-09 — Decision Mode PEP (decide → fulfill → forward)
 
 Adds the SDK analog of `platform/shared/pep` (ADR-056, epic
