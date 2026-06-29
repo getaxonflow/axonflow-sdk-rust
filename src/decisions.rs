@@ -75,8 +75,8 @@ impl AxonFlowClient {
     /// branch on `envelope.upgrade.{tier,compare_url,buy_url}` without
     /// re-parsing the body.
     ///
-    /// Filters compose: passing `decision = Some("deny")` AND
-    /// `policy_id = Some("pol-sqli")` returns only deny decisions
+    /// Filters compose: passing `decision = Some("blocked")` AND
+    /// `policy_id = Some("pol-sqli")` returns only blocked decisions
     /// matching that policy. `since` is RFC3339 (chrono `DateTime<Utc>`).
     ///
     /// # Example
@@ -86,7 +86,7 @@ impl AxonFlowClient {
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = AxonFlowClient::new(AxonFlowConfig::new("http://localhost:8080"))?;
     /// let opts = ListDecisionsOptions {
-    ///     decision: Some("deny".into()),
+    ///     decision: Some("blocked".into()),
     ///     limit: Some(10),
     ///     ..Default::default()
     /// };
@@ -212,7 +212,7 @@ mod tests {
         let want = json!({
             "decision_id": "dec_wf1_step2",
             "timestamp": "2026-04-17T12:00:00Z",
-            "decision": "deny",
+            "decision": "blocked",
             "reason": "SQL injection detected",
             "risk_level": "high",
             "policy_matches": [{
@@ -241,7 +241,7 @@ mod tests {
         let got = client.explain_decision("dec_wf1_step2").await.unwrap();
 
         assert_eq!(got.decision_id, "dec_wf1_step2");
-        assert_eq!(got.decision, "deny");
+        assert_eq!(got.decision, "blocked");
         assert_eq!(got.reason, "SQL injection detected");
         assert_eq!(got.risk_level.as_deref(), Some("high"));
         assert_eq!(got.policy_matches.len(), 1);
@@ -266,7 +266,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "decision_id": "a/b",
                 "timestamp": "2026-04-17T12:00:00Z",
-                "decision": "allow",
+                "decision": "allowed",
                 "reason": "",
                 "policy_matches": []
             })))
@@ -358,7 +358,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "decision_id": "dec-x",
                 "timestamp": "2026-04-17T12:00:00Z",
-                "decision": "allow",
+                "decision": "allowed",
                 "reason": "",
                 "policy_matches": [],
                 "policy_version_at_decision": "v3",      // future-additive (V1.1)
@@ -390,21 +390,21 @@ mod tests {
                 {
                     "decision_id": "dec-1",
                     "timestamp": "2026-05-07T12:00:00Z",
-                    "decision": "deny",
+                    "decision": "blocked",
                     "policy_id": "pol-sqli",
                     "tool_signature": "postgres.query"
                 },
                 {
                     "decision_id": "dec-2",
                     "timestamp": "2026-05-07T11:00:00Z",
-                    "decision": "allow",
+                    "decision": "allowed",
                     "policy_id": "pol-default",
                     "tool_signature": "github.status"
                 },
                 {
                     "decision_id": "dec-3",
                     "timestamp": "2026-05-07T10:00:00Z",
-                    "decision": "require_approval",
+                    "decision": "needs_approval",
                     "policy_id": "pol-amount",
                     "tool_signature": "stripe.charge"
                 }
@@ -429,10 +429,10 @@ mod tests {
 
         assert_eq!(got.len(), 3);
         assert_eq!(got[0].decision_id, "dec-1");
-        assert_eq!(got[0].decision, "deny");
+        assert_eq!(got[0].decision, "blocked");
         assert_eq!(got[0].policy_id.as_deref(), Some("pol-sqli"));
         assert_eq!(got[0].tool_signature.as_deref(), Some("postgres.query"));
-        assert_eq!(got[2].decision, "require_approval");
+        assert_eq!(got[2].decision, "needs_approval");
     }
 
     #[tokio::test]
@@ -445,7 +445,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v1/decisions"))
             .and(query_param("since", "2026-05-07T00:00:00Z"))
-            .and(query_param("decision", "deny"))
+            .and(query_param("decision", "blocked"))
             .and(query_param("policy_id", "pol-sqli"))
             .and(query_param("tool_signature", "postgres.query"))
             .and(query_param("limit", "25"))
@@ -457,7 +457,7 @@ mod tests {
         let client = make_client(server.uri());
         let opts = ListDecisionsOptions {
             since: Some(Utc.with_ymd_and_hms(2026, 5, 7, 0, 0, 0).unwrap()),
-            decision: Some("deny".into()),
+            decision: Some("blocked".into()),
             policy_id: Some("pol-sqli".into()),
             tool_signature: Some("postgres.query".into()),
             limit: Some(25),
@@ -582,7 +582,7 @@ mod tests {
             "decisions": [{
                 "decision_id": "dec-fwd",
                 "timestamp": "2026-05-07T12:00:00Z",
-                "decision": "deny",
+                "decision": "blocked",
                 "policy_id": "pol-x",
                 "tool_signature": "tool-x",
                 "policy_version": 7,                  // future-additive (#1983 α3)
@@ -613,11 +613,11 @@ mod tests {
         assert_eq!(qs, "");
 
         let qs = build_decisions_query(&ListDecisionsOptions {
-            decision: Some("deny".into()),
+            decision: Some("blocked".into()),
             limit: Some(7),
             ..Default::default()
         });
-        assert_eq!(qs, "decision=deny&limit=7");
+        assert_eq!(qs, "decision=blocked&limit=7");
     }
 
     #[test]
@@ -628,7 +628,7 @@ mod tests {
         let raw = json!({
             "decision_id": "dec-min",
             "timestamp": "2026-05-07T12:00:00Z",
-            "decision": "deny"
+            "decision": "blocked"
         });
         let parsed: DecisionSummary = serde_json::from_value(raw).unwrap();
         assert_eq!(parsed.decision_id, "dec-min");

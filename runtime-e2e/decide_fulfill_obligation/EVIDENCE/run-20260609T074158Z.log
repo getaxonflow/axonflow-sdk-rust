@@ -1,0 +1,17 @@
+# Runtime-e2e capture — Decision Mode PEP (decide -> fulfill -> forward), #2571
+# SDK 0.7.0, real enterprise agent, 2026-06-09T07:41:58Z
+
+>>> Waiting for agent (http://localhost:8080) /health
+>>> SDK version: 0.7.0
+>>> Building + running helper (exercises the real SDK PEP code path)
+>>> decide verdict=allow decision_id=Some("dc6306de-ac92-429f-9cd2-abb24b848d0c") obligations=1
+PASS: decide -> allow + request-phase redact_pii obligation
+>>> fulfilled content: Send the receipt to jo****************om and charge card 4**************1
+PASS: fulfill_request -> engine-masked; neither email nor card survives
+>>> decide_and_fulfill verdict=allow content=Send the receipt to jo****************om and charge card 4**************1
+PASS: decide_and_fulfill -> masked content, no PII
+PASS: demo creds refused with 401
+
+RESULT: PASS — decide -> fulfill -> masked; demo creds refused
+
+PASS: decide -> fulfill -> masked; demo creds refused (sdk_version=0.7.0)

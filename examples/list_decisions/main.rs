@@ -11,7 +11,9 @@
 //   AXONFLOW_CLIENT_SECRET
 //
 // Optional filters:
-//   AXONFLOW_LIST_DECISION       allow|deny|require_approval
+//   AXONFLOW_LIST_DECISION       allowed|blocked|redacted|needs_approval|error
+//                                (canonical audit verdicts, platform 9.0.0+;
+//                                pre-9.0.0 allow|deny|require_approval now 400)
 //   AXONFLOW_LIST_POLICY_ID      e.g. sys_sqli_stacked_drop
 //   AXONFLOW_LIST_LIMIT          integer (server-capped per tier)
 //

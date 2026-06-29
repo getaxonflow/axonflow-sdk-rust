@@ -22,6 +22,19 @@ pub enum AxonFlowError {
     ConfigError(String),
     #[error("AxonFlow platform is unavailable: {0}")]
     Unavailable(String),
+    /// A Decision Mode `redact_pii` obligation could not be discharged through
+    /// the engine — it named no request-phase fulfillment, advertised a
+    /// content-type the PEP is not holding, named an endpoint this client will
+    /// not call, the engine call failed / returned non-200, or the engine
+    /// reported the redactor did not run (`redaction_evaluated=false`).
+    ///
+    /// This is the fail-closed signal of the PEP contract (ADR-056, #2563): the
+    /// caller MUST block, never forward the unredacted content. There is NO code
+    /// path in which the SDK redacts locally — fulfillment is always the engine
+    /// round-trip — so an obligation the engine cannot discharge fails closed
+    /// here rather than leaking PII.
+    #[error("Obligation not engine-fulfillable: {0}")]
+    ObligationNotFulfillable(String),
 }
 
 impl AxonFlowError {
