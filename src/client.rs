@@ -2,10 +2,11 @@ use crate::config::{AxonFlowConfig, Mode};
 use crate::error::AxonFlowError;
 use crate::heartbeat::maybe_send_heartbeat;
 use crate::types::agent::{ClientRequest, ClientResponse};
+use crate::PATH_SEGMENT;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use base64::Engine as _;
 use moka::future::Cache;
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use percent_encoding::utf8_percent_encode;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,33 +14,6 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 const LICENSE_KEY_HEADER: &str = "X-License-Key";
-
-// Path-segment encode set: mirrors Go's `url.PathEscape` semantics so
-// percent-encoding parity holds across SDKs. Keeps RFC 3986 unreserved
-// characters (alphanum, `-`, `.`, `_`, `~`) unencoded; escapes path-
-// significant chars (`/`, `?`, `#`, `%`) plus controls and characters
-// that web infra commonly rejects (` "<>``\\{}`).
-//
-// Replaces the previous `NON_ALPHANUMERIC` usage which over-escaped
-// underscores and dashes — observable as `dec_wf1_step2` becoming
-// `dec%5Fwf1%5Fstep2` in the explain path, and `amadeus-travel`
-// becoming `amadeus%2Dtravel` for connector lookups. Gorilla mux
-// percent-decodes path segments so the platform happened to tolerate
-// the over-escaped form, but the wire was wrong and any stricter
-// router would 404. Found while wiring `decisions::explain_decision`.
-pub(crate) const PATH_SEGMENT: &AsciiSet = &CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'<')
-    .add(b'>')
-    .add(b'`')
-    .add(b'\\')
-    .add(b'{')
-    .add(b'}')
-    .add(b'#')
-    .add(b'?')
-    .add(b'/')
-    .add(b'%');
 
 #[derive(Clone)]
 pub struct AxonFlowClient {
@@ -89,12 +63,9 @@ impl AxonFlowClient {
         // HTTP Basic auth: "Basic base64(client_id:client_secret)".
         // When neither is configured, default to the community tenant —
         // matches the cross-SDK contract (see axonflow-sdk-go selfhosted_auth_headers_test.go).
-        let basic_id = config
-            .client_id
-            .clone()
-            .unwrap_or_else(|| "community".to_string());
-        let basic_secret = config.client_secret.clone().unwrap_or_default();
-        let basic_credentials = BASE64_STD.encode(format!("{}:{}", basic_id, basic_secret));
+        let basic_id = config.client_id.as_deref().unwrap_or("community");
+        let basic_secret = config.client_secret.as_deref().unwrap_or("");
+        let basic_credentials = BASE64_STD.encode(format!("{basic_id}:{basic_secret}"));
         let basic_value = format!("Basic {}", basic_credentials);
         if let Ok(val) = HeaderValue::from_str(&basic_value) {
             headers.insert(AUTHORIZATION, val);
@@ -104,7 +75,7 @@ impl AxonFlowClient {
         // re-decode Basic auth. The agent's apiAuthMiddleware overwrites
         // the header with its auth-derived value, so caller-supplied
         // values are harmless (no spoofing surface).
-        if let Ok(val) = HeaderValue::from_str(&basic_id) {
+        if let Ok(val) = HeaderValue::from_str(basic_id) {
             headers.insert("X-Client-ID", val);
         }
 
@@ -127,6 +98,8 @@ impl AxonFlowClient {
             .timeout(config.timeout)
             .default_headers(headers.clone())
             .danger_accept_invalid_certs(accept_invalid)
+            .pool_max_idle_per_host(5)
+            .tcp_keepalive(Duration::from_secs(30))
             .build()
             .map_err(AxonFlowError::HttpError)?;
 
@@ -134,12 +107,17 @@ impl AxonFlowClient {
             .timeout(config.map_timeout)
             .default_headers(headers)
             .danger_accept_invalid_certs(accept_invalid)
+            .pool_max_idle_per_host(5)
+            .tcp_keepalive(Duration::from_secs(30))
             .build()
             .map_err(AxonFlowError::HttpError)?;
 
         let cache = if config.cache.enabled {
             Some(Arc::new(
-                Cache::builder().time_to_live(config.cache.ttl).build(),
+                Cache::builder()
+                    .time_to_live(config.cache.ttl)
+                    .max_capacity(config.cache.max_capacity)
+                    .build(),
             ))
         } else {
             None
@@ -155,6 +133,7 @@ impl AxonFlowClient {
         })
     }
 
+    #[tracing::instrument(skip(self, context))]
     pub async fn proxy_llm_call(
         &self,
         user_token: &str,
@@ -312,6 +291,7 @@ impl AxonFlowClient {
     // Multi-Agent Planning (MAP)
     // ============================================================================
 
+    #[tracing::instrument(skip(self))]
     pub async fn generate_plan(
         &self,
         query: &str,
@@ -398,23 +378,10 @@ impl AxonFlowClient {
     ) -> Result<crate::types::agent::AuditResult, AxonFlowError> {
         let client_id = self.get_effective_client_id();
 
-        let mut req_body = serde_json::json!({
-            "context_id": req.context_id,
-            "client_id": client_id,
-            "response_summary": req.response_summary,
-            "provider": req.provider,
-            "model": req.model,
-            "token_usage": {
-                "prompt_tokens": req.token_usage.prompt_tokens,
-                "completion_tokens": req.token_usage.completion_tokens,
-                "total_tokens": req.token_usage.total_tokens,
-            },
-            "latency_ms": req.latency_ms,
-        });
-
-        if let Some(meta) = &req.metadata {
-            req_body["metadata"] = serde_json::to_value(meta)?;
-        } else {
+        let mut req_body = serde_json::to_value(req)?;
+        req_body["client_id"] = serde_json::json!(client_id);
+        // Platform expects "metadata": {} when absent, not null.
+        if req_body.get("metadata").map_or(true, |v| v.is_null()) {
             req_body["metadata"] = serde_json::json!({});
         }
 
@@ -453,13 +420,18 @@ impl AxonFlowClient {
         user_token: &str,
         context: &HashMap<String, serde_json::Value>,
     ) -> String {
-        let context_hash = if context.is_empty() {
-            String::new()
-        } else {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        request_type.hash(&mut hasher);
+        query.hash(&mut hasher);
+        user_token.hash(&mut hasher);
+        if !context.is_empty() {
             let sorted: std::collections::BTreeMap<_, _> = context.iter().collect();
-            format!(":{}", serde_json::to_string(&sorted).unwrap_or_default())
-        };
-        format!("{}:{}:{}{}", request_type, query, user_token, context_hash)
+            serde_json::to_string(&sorted)
+                .unwrap_or_default()
+                .hash(&mut hasher);
+        }
+        format!("{:x}", hasher.finish())
     }
 
     /// Endpoint URL the client is configured against.
@@ -599,8 +571,13 @@ impl AxonFlowClient {
         let body = resp.text().await?;
 
         if status.is_success() || status.as_u16() == 402 || status.as_u16() == 403 {
-            let client_resp: ClientResponse = serde_json::from_str(&body)?;
-            Ok(client_resp)
+            match serde_json::from_str::<ClientResponse>(&body) {
+                Ok(r) => Ok(r),
+                Err(_) => Err(AxonFlowError::ApiError {
+                    status: status.as_u16(),
+                    message: body,
+                }),
+            }
         } else {
             Err(AxonFlowError::ApiError {
                 status: status.as_u16(),

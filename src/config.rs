@@ -10,6 +10,9 @@ pub enum Mode {
 
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
+    /// Whether retries are enabled. Note: even when `true`, mutations
+    /// (`execute-plan`, `generate-plan`, `cancel-plan`, `update-plan`) are
+    /// never retried to avoid double-execution.
     pub enabled: bool,
     pub max_attempts: u32,
     pub initial_delay: Duration,
@@ -29,6 +32,9 @@ impl Default for RetryConfig {
 pub struct CacheConfig {
     pub enabled: bool,
     pub ttl: Duration,
+    /// Maximum number of entries in the cache. When the cache reaches this
+    /// size, the least recently used entry is evicted. Defaults to 10,000.
+    pub max_capacity: u64,
 }
 
 impl Default for CacheConfig {
@@ -36,6 +42,7 @@ impl Default for CacheConfig {
         Self {
             enabled: true,
             ttl: Duration::from_secs(60),
+            max_capacity: 10_000,
         }
     }
 }

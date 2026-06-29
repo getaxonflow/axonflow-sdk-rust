@@ -48,12 +48,38 @@ impl AxonFlowError {
         }
     }
 
+    /// Whether this error should trigger fail-open (return a synthetic success
+    /// response). Currently identical to [`is_retryable`]; maintained as a
+    /// separate method because future policy changes may diverge them (e.g.
+    /// `ConfigError` could be fail-open-eligible but not retryable).
     pub fn is_fail_open_eligible(&self) -> bool {
-        match self {
-            AxonFlowError::HttpError(e) => e.is_timeout() || e.is_connect(),
-            AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
-            AxonFlowError::RateLimited { .. } => true,
-            AxonFlowError::Unavailable(_) => true,
+        self.is_retryable()
+    }
+}
+
+impl PartialEq for AxonFlowError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::HttpError(a), Self::HttpError(b)) => {
+                a.is_timeout() == b.is_timeout()
+                    && a.is_connect() == b.is_connect()
+                    && a.status() == b.status()
+                    && a.to_string() == b.to_string()
+            }
+            (Self::SerdeError(a), Self::SerdeError(b)) => a.to_string() == b.to_string(),
+            (
+                Self::ApiError {
+                    status: s1,
+                    message: m1,
+                },
+                Self::ApiError {
+                    status: s2,
+                    message: m2,
+                },
+            ) => s1 == s2 && m1 == m2,
+            (Self::RateLimited { envelope: e1 }, Self::RateLimited { envelope: e2 }) => e1 == e2,
+            (Self::ConfigError(m1), Self::ConfigError(m2)) => m1 == m2,
+            (Self::Unavailable(m1), Self::Unavailable(m2)) => m1 == m2,
             _ => false,
         }
     }

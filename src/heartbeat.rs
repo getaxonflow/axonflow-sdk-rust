@@ -271,26 +271,7 @@ fn runtime_version_str() -> String {
 }
 
 fn instance_id() -> String {
-    // UUIDv4 without external deps — same approach as the Go SDK's
-    // generateInstanceID.
-    use std::time::UNIX_EPOCH;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let pid = std::process::id() as u64;
-    let mix = nanos ^ pid.rotate_left(17);
-    let bytes = mix.to_le_bytes();
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        u16::from_le_bytes([bytes[4], bytes[5]]),
-        u16::from_le_bytes([bytes[6], bytes[7]]) & 0x0fff,
-        (u16::from_le_bytes([bytes[0], bytes[7]]) & 0x3fff) | 0x8000,
-        u64::from_le_bytes([
-            bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[0], bytes[7]
-        ]) & 0xffff_ffff_ffff
-    )
+    uuid::Uuid::new_v4().to_string()
 }
 
 async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>) {
@@ -361,12 +342,13 @@ async fn send_heartbeat(endpoint: &str, mode: &Mode, stamp_path: Option<PathBuf>
             // environments.
             if let Some(stamp_path) = stamp_path {
                 if let Some(parent) = stamp_path.parent() {
-                    let _ = fs::create_dir_all(parent);
+                    let _ = tokio::fs::create_dir_all(parent).await;
                 }
-                let _ = fs::write(
+                let _ = tokio::fs::write(
                     &stamp_path,
                     format!("last_sent={}", chrono::Utc::now().to_rfc3339()),
-                );
+                )
+                .await;
             }
         }
         Ok(resp) => debug!("Telemetry heartbeat rejected by server: {}", resp.status()),

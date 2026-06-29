@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache: CacheConfig {
             enabled: true,
             ttl: Duration::from_secs(120),
+            ..Default::default()
         },
         ..Default::default()
     };

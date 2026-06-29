@@ -118,7 +118,7 @@ pub struct TokenUsage {
     pub total_tokens: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditRequest {
     pub context_id: String,
     pub response_summary: String,
@@ -346,6 +346,7 @@ pub struct PlanExecutionResponse {
     pub total_steps: i32,
 }
 
+#[must_use]
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct CancelPlanResponse {

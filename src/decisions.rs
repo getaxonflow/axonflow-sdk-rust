@@ -12,13 +12,15 @@
 //   TS:     axonflow-sdk-typescript/src/client.ts (explainDecision)
 //   Java:   axonflow-sdk-java/src/main/java/com/getaxonflow/sdk/AxonFlow.java (explainDecision)
 
-use crate::client::{AxonFlowClient, PATH_SEGMENT};
+use crate::client::AxonFlowClient;
 use crate::error::AxonFlowError;
 use crate::types::decisions::{
     DecisionExplanation, DecisionSummary, ListDecisionsOptions, RateLimitEnvelope,
 };
+use crate::PATH_SEGMENT;
 use percent_encoding::utf8_percent_encode;
 use serde::Deserialize;
+use tracing;
 
 impl AxonFlowClient {
     /// Fetches the full explanation for a previously-made policy decision.
@@ -40,6 +42,7 @@ impl AxonFlowClient {
     /// }
     /// # Ok(()) }
     /// ```
+    #[tracing::instrument(skip(self))]
     pub async fn explain_decision(
         &self,
         decision_id: &str,
@@ -272,7 +275,7 @@ mod tests {
             .await;
 
         let client = make_client(server.uri());
-        client.explain_decision("a/b").await.unwrap();
+        let _ = client.explain_decision("a/b").await.unwrap();
     }
 
     #[tokio::test]

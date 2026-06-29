@@ -248,6 +248,7 @@ async fn test_caching() {
         cache: CacheConfig {
             enabled: true,
             ttl: Duration::from_secs(60),
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -288,6 +289,7 @@ async fn test_mutation_bypass_cache() {
         cache: CacheConfig {
             enabled: true,
             ttl: Duration::from_secs(60),
+            ..Default::default()
         },
         ..Default::default()
     };
