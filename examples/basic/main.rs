@@ -9,6 +9,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_id = std::env::var("AXONFLOW_CLIENT_ID").expect("AXONFLOW_CLIENT_ID must be set");
     let client_secret =
         std::env::var("AXONFLOW_CLIENT_SECRET").expect("AXONFLOW_CLIENT_SECRET must be set");
+    // Enterprise stacks (DEPLOYMENT_MODE=enterprise) validate user tokens as
+    // JWTs - export AXONFLOW_USER_TOKEN. Community stacks skip JWT validation.
+    let user_token = std::env::var("AXONFLOW_USER_TOKEN").unwrap_or_default();
 
     // Initialize client
     println!("Initializing AxonFlow client...");
@@ -23,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let resp = client
         .proxy_llm_call(
-            "", // SDK auto-populates user_token (defaults to "anonymous")
+            &user_token,
             "What is the capital of France?",
             "chat",
             context,
@@ -42,8 +45,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check if request succeeded
     if !resp.success {
-        println!("❌ Query failed: {}", resp.error.unwrap_or_default());
-        return Ok(());
+        eprintln!("❌ Query failed: {}", resp.error.unwrap_or_default());
+        std::process::exit(1);
     }
 
     // Display result
@@ -65,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let resp2 = client
         .proxy_llm_call(
-            "",
+            &user_token,
             "My email is john.doe@example.com and my SSN is 123-45-6789",
             "chat",
             HashMap::new(),
@@ -75,6 +78,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if resp2.blocked {
         println!("✓ PII detected and request blocked");
         println!("  Reason: {}", resp2.block_reason.unwrap_or_default());
+    } else if !resp2.success {
+        eprintln!(
+            "❌ PII test query failed: {}",
+            resp2.error.unwrap_or_default()
+        );
+        std::process::exit(1);
     } else {
         println!("✓ PII handled: {:?}", resp2.data);
     }

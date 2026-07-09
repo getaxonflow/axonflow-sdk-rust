@@ -9,6 +9,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_id = std::env::var("AXONFLOW_CLIENT_ID").expect("AXONFLOW_CLIENT_ID must be set");
     let client_secret =
         std::env::var("AXONFLOW_CLIENT_SECRET").expect("AXONFLOW_CLIENT_SECRET must be set");
+    // Enterprise stacks (DEPLOYMENT_MODE=enterprise) validate user tokens as
+    // JWTs - export AXONFLOW_USER_TOKEN. Community stacks skip JWT validation.
+    let user_token = std::env::var("AXONFLOW_USER_TOKEN").unwrap_or_default();
 
     // Initialize client with advanced configuration
     println!("Initializing AxonFlow client with advanced features...");
@@ -39,7 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let goal = "Plan a 3-day business trip to Paris with meetings at La Défense";
     println!("Goal: {}\n", goal);
 
-    let plan = client.generate_plan(goal, "travel", None).await?;
+    let plan = client
+        .generate_plan(goal, "travel", Some(&user_token))
+        .await?;
 
     println!("✓ Plan generated successfully!");
     println!("  Plan ID: {}", plan.plan_id);
@@ -54,7 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Executing plan...");
     let start_time = std::time::Instant::now();
-    let exec_resp = client.execute_plan(&plan.plan_id, None).await?;
+    let exec_resp = client
+        .execute_plan(&plan.plan_id, Some(&user_token))
+        .await?;
 
     println!("\n✓ Plan execution completed in {:?}", start_time.elapsed());
     println!("  Status: {}", exec_resp.status);

@@ -5,6 +5,26 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Hostile-testing sweep ahead of the BukuWarung integration
+(getaxonflow/axonflow-enterprise#2861). Examples only — no library changes.
+
+### Fixed
+
+- **Examples pass `AXONFLOW_USER_TOKEN` and fail honestly.** Enterprise
+  stacks (`DEPLOYMENT_MODE=enterprise`) validate user tokens as JWTs; the
+  examples passed `""` / hardcoded literals and 401'd. `basic` (both
+  calls, now also exits non-zero on a non-success PII response), `planning`
+  (`generate_plan` + `execute_plan`) and `connectors` (`query_connector`)
+  read `AXONFLOW_USER_TOKEN`.
+- **`interceptors` and `anthropic_interceptor` examples authenticate.**
+  They constructed a credential-less client against a hardcoded
+  `http://localhost:8080`, printed `❌ Request blocked or failed` on the
+  agent's 401 and still exited 0. They now read
+  `AXONFLOW_AGENT_URL`/`AXONFLOW_CLIENT_ID`/`AXONFLOW_CLIENT_SECRET`/
+  `AXONFLOW_USER_TOKEN` and exit non-zero on failure.
+
 ## [0.8.0] - 2026-06-29 — Performance & reliability hardening
 
 A hygiene and performance pass across the SDK. Behavior on the wire is
