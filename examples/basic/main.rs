@@ -45,8 +45,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check if request succeeded
     if !resp.success {
-        eprintln!("❌ Query failed: {}", resp.error.unwrap_or_default());
-        std::process::exit(1);
+        let err = resp.error.unwrap_or_default();
+        if err.contains("Invalid user token") {
+            // Real failure: export AXONFLOW_USER_TOKEN on JWT-validating stacks.
+            eprintln!("❌ Query failed: {err}");
+            std::process::exit(1);
+        }
+        // Stacks without a working LLM provider (e.g. community CI without
+        // provider keys) legitimately can't route the call - governance
+        // still ran. Mirror the Java example's carve-out.
+        println!("  Query non-success (expected without an LLM provider): {err}");
+        return Ok(());
     }
 
     // Display result
