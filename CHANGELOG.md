@@ -12,6 +12,12 @@ Hostile-testing sweep ahead of the BukuWarung integration
 
 ### Fixed
 
+- **`execute_plan` reports `status: "completed"` on success.** The
+  execute-plan success payload carries no `status` field (only
+  metadata/plan_id), so `status` deserialized to `""` and callers treated
+  every successful execution as a failure. A successful round-trip now
+  defaults to `"completed"` (Go SDK parity); an explicit wire `status` is
+  preserved. Regression tests cover both.
 - **Examples pass `AXONFLOW_USER_TOKEN` and fail honestly.** Enterprise
   stacks (`DEPLOYMENT_MODE=enterprise`) validate user tokens as JWTs; the
   examples passed `""` / hardcoded literals and 401'd. `basic` (both

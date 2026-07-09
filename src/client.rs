@@ -331,7 +331,15 @@ impl AxonFlowClient {
             .await?;
 
         if let Some(data) = resp.data {
-            let exec: crate::types::agent::PlanExecutionResponse = serde_json::from_value(data)?;
+            let mut exec: crate::types::agent::PlanExecutionResponse =
+                serde_json::from_value(data)?;
+            // The execute-plan wire payload carries no `status` field on
+            // success (only metadata/plan_id); a successful round-trip IS
+            // completion. Matches the Go SDK, which sets "completed"
+            // client-side (cross-SDK parity, enterprise#2861 sweep).
+            if exec.status.is_empty() {
+                exec.status = "completed".to_string();
+            }
             Ok(exec)
         } else {
             Err(AxonFlowError::ApiError {
