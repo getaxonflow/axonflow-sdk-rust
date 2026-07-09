@@ -9,6 +9,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_id = std::env::var("AXONFLOW_CLIENT_ID").expect("AXONFLOW_CLIENT_ID must be set");
     let client_secret =
         std::env::var("AXONFLOW_CLIENT_SECRET").expect("AXONFLOW_CLIENT_SECRET must be set");
+    // Enterprise stacks (DEPLOYMENT_MODE=enterprise) validate user tokens as
+    // JWTs - export AXONFLOW_USER_TOKEN. Community stacks skip JWT validation.
+    let user_token = std::env::var("AXONFLOW_USER_TOKEN").unwrap_or_default();
 
     // Initialize client
     println!("Initializing AxonFlow client...");
@@ -82,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let resp = client
         .query_connector(
-            "user-123",
+            &user_token,
             "redis-cache",
             "Get cached user preferences for user-123",
             params,

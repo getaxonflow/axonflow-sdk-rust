@@ -756,3 +756,120 @@ async fn test_cancel_plan_uses_singular_path() {
     assert_eq!(resp.plan_id, "plan42");
     assert!(resp.success);
 }
+
+#[tokio::test]
+async fn test_execute_plan_defaults_status_completed_when_wire_omits_it() {
+    // Regression (enterprise#2861 sweep): the execute-plan success payload
+    // carries no `status` field (only metadata/plan_id), so `status`
+    // deserialized to "" and callers treated a successful execution as a
+    // failure. A successful round-trip must report "completed" (Go parity).
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": true,
+                    "data": {
+                        "plan_id": "plan-77",
+                        "metadata": {
+                            "execution_mode": "auto",
+                            "tasks_executed": 2
+                        }
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config = AxonFlowConfig {
+        endpoint: server.uri(),
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+
+    let exec = client
+        .execute_plan("plan-77", Some("jwt-user"))
+        .await
+        .unwrap();
+    assert_eq!(exec.status, "completed");
+}
+
+#[tokio::test]
+async fn test_execute_plan_preserves_explicit_wire_status() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": true,
+                    "data": {
+                        "plan_id": "plan-88",
+                        "status": "partial"
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config = AxonFlowConfig {
+        endpoint: server.uri(),
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+
+    let exec = client
+        .execute_plan("plan-88", Some("jwt-user"))
+        .await
+        .unwrap();
+    assert_eq!(exec.status, "partial");
+}
+
+#[tokio::test]
+async fn test_execute_plan_failed_envelope_never_reads_completed() {
+    // R3 regression: a policy-blocked/failed execution whose data payload
+    // omits `status` must NOT default to "completed" — the default is gated
+    // on the envelope's success verdict.
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": false,
+                    "error": "execution failed: step search-flights failed",
+                    "data": {
+                        "plan_id": "plan-99",
+                        "metadata": { "tasks_executed": 1 }
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config = AxonFlowConfig {
+        endpoint: server.uri(),
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+
+    let exec = client
+        .execute_plan("plan-99", Some("jwt-user"))
+        .await
+        .unwrap();
+    assert_eq!(exec.status, "failed");
+    assert_eq!(
+        exec.error.as_deref(),
+        Some("execution failed: step search-flights failed")
+    );
+}

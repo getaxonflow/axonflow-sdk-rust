@@ -331,7 +331,22 @@ impl AxonFlowClient {
             .await?;
 
         if let Some(data) = resp.data {
-            let exec: crate::types::agent::PlanExecutionResponse = serde_json::from_value(data)?;
+            let mut exec: crate::types::agent::PlanExecutionResponse =
+                serde_json::from_value(data)?;
+            // The execute-plan wire payload carries no `status` field (only
+            // metadata/plan_id), so default it from the envelope verdict —
+            // gated on `success`: a policy-blocked or failed execution must
+            // never read as "completed" (enterprise#2861 sweep, R3).
+            if exec.status.is_empty() {
+                exec.status = if resp.success && !resp.blocked {
+                    "completed".to_string()
+                } else {
+                    "failed".to_string()
+                };
+            }
+            if exec.error.is_none() {
+                exec.error = resp.error;
+            }
             Ok(exec)
         } else {
             Err(AxonFlowError::ApiError {

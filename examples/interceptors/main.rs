@@ -40,11 +40,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Initializing AxonFlow Interceptor example...");
 
     // 1. Initialize AxonFlow
-    let axon = AxonFlowClient::new(AxonFlowConfig::new("http://localhost:8080"))?;
+    let agent_url =
+        std::env::var("AXONFLOW_AGENT_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let client_id = std::env::var("AXONFLOW_CLIENT_ID").expect("AXONFLOW_CLIENT_ID must be set");
+    let client_secret =
+        std::env::var("AXONFLOW_CLIENT_SECRET").expect("AXONFLOW_CLIENT_SECRET must be set");
+    // Enterprise stacks validate user tokens as JWTs - export AXONFLOW_USER_TOKEN.
+    let user_token = std::env::var("AXONFLOW_USER_TOKEN").unwrap_or_default();
+    let mut config = AxonFlowConfig::new(&agent_url);
+    config.client_id = Some(client_id);
+    config.client_secret = Some(client_secret);
+    let axon = AxonFlowClient::new(config)?;
 
     // 2. Wrap your LLM client
     let raw_client = MyRawOpenAIClient;
-    let governed_client = WrappedOpenAIClient::new(raw_client, axon, "user-789");
+    let governed_client = WrappedOpenAIClient::new(raw_client, axon, &user_token);
 
     println!("\nExecuting governed request via Interceptor...");
 
@@ -61,7 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match governed_client.create_chat_completion(req).await {
         Ok(resp) => println!("✓ Request succeeded: {}", resp.id),
-        Err(e) => println!("❌ Request blocked or failed: {}", e),
+        Err(e) => {
+            eprintln!("❌ Request blocked or failed: {}", e);
+            std::process::exit(1);
+        }
     }
 
     Ok(())
