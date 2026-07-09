@@ -8,16 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.8.1] - 2026-07-09 — execute_plan status + example fixes
 
 Hostile-testing sweep ahead of the BukuWarung integration
-(getaxonflow/axonflow-enterprise#2861). Examples only — no library changes.
+(getaxonflow/axonflow-enterprise#2861). One library fix (`execute_plan`
+status semantics) + example fixes.
 
 ### Fixed
 
-- **`execute_plan` reports `status: "completed"` on success.** The
-  execute-plan success payload carries no `status` field (only
-  metadata/plan_id), so `status` deserialized to `""` and callers treated
-  every successful execution as a failure. A successful round-trip now
-  defaults to `"completed"` (Go SDK parity); an explicit wire `status` is
-  preserved. Regression tests cover both.
+- **`execute_plan` status semantics fixed.** The execute-plan payload
+  carries no `status` field (only metadata/plan_id), so `status`
+  deserialized to `""` and callers treated every successful execution as a
+  failure. The default is now derived from the envelope verdict:
+  `"completed"` only when `success && !blocked`, else `"failed"` (with the
+  envelope error carried over) — a policy-blocked/failed plan can never
+  read as completed. An explicit wire `status` is preserved. Regression
+  tests cover all three paths.
 - **Examples pass `AXONFLOW_USER_TOKEN` and fail honestly.** Enterprise
   stacks (`DEPLOYMENT_MODE=enterprise`) validate user tokens as JWTs; the
   examples passed `""` / hardcoded literals and 401'd. `basic` (both

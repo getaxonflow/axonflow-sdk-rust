@@ -831,3 +831,45 @@ async fn test_execute_plan_preserves_explicit_wire_status() {
         .unwrap();
     assert_eq!(exec.status, "partial");
 }
+
+#[tokio::test]
+async fn test_execute_plan_failed_envelope_never_reads_completed() {
+    // R3 regression: a policy-blocked/failed execution whose data payload
+    // omits `status` must NOT default to "completed" — the default is gated
+    // on the envelope's success verdict.
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({
+                    "success": false,
+                    "error": "execution failed: step search-flights failed",
+                    "data": {
+                        "plan_id": "plan-99",
+                        "metadata": { "tasks_executed": 1 }
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config = AxonFlowConfig {
+        endpoint: server.uri(),
+        ..Default::default()
+    };
+    let client = AxonFlowClient::new(config).unwrap();
+
+    let exec = client
+        .execute_plan("plan-99", Some("jwt-user"))
+        .await
+        .unwrap();
+    assert_eq!(exec.status, "failed");
+    assert_eq!(
+        exec.error.as_deref(),
+        Some("execution failed: step search-flights failed")
+    );
+}
