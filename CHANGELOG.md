@@ -27,6 +27,16 @@ status semantics) + example fixes.
   calls, now also exits non-zero on a non-success PII response), `planning`
   (`generate_plan` + `execute_plan`) and `connectors` (`query_connector`)
   read `AXONFLOW_USER_TOKEN`.
+- **`connectors` example works against a real stack.** The Amadeus install
+  hardcoded a nonexistent `demo-tenant` (tripping the platform's tenant FK)
+  and `environment=production` (Amadeus self-service keys are
+  test-environment keys — production auth 401s). It now defaults the tenant
+  to the caller's own (`AXONFLOW_TENANT_ID` overrides), defaults the Amadeus
+  environment to `test` (`AMADEUS_ENVIRONMENT` overrides), skips the install
+  when the connector is already installed so the example is re-runnable, and
+  queries Redis with the connector's actual `GET` operation contract instead
+  of a natural-language string the connector rejects as an unsupported
+  operation.
 - **`interceptors` and `anthropic_interceptor` examples authenticate.**
   They constructed a credential-less client against a hardcoded
   `http://localhost:8080`, printed `❌ Request blocked or failed` on the
