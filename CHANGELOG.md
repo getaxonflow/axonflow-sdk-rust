@@ -5,6 +5,21 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`connectors` example works against a real stack.** The Amadeus install
+  hardcoded a nonexistent `demo-tenant` (tripping the platform's tenant FK)
+  and `environment=production` (Amadeus self-service keys are
+  test-environment keys — production auth 401s). It now defaults the tenant
+  to the caller's own (`AXONFLOW_TENANT_ID` overrides), defaults the Amadeus
+  environment to `test` (`AMADEUS_ENVIRONMENT` overrides), skips the install
+  when the connector is already installed so the example is re-runnable, and
+  queries Redis with the connector's actual `GET` operation contract instead
+  of a natural-language string the connector rejects as an unsupported
+  operation.
+
 ## [0.8.1] - 2026-07-09 — execute_plan status + example fixes
 
 Hostile-testing sweep ahead of the BukuWarung integration
