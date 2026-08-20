@@ -7,12 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-20: five RUSTSEC advisories cleared
+
+### Security
+
+- **Five RUSTSEC advisories cleared from the dependency tree** (#73), all by
+  targeted `cargo update -p <crate>`: this is a lockfile-only change with no
+  `Cargo.toml` edits, no unrelated pins moved and no crate API exercised
+  differently.
+
+  | Advisory | Crate | Before | After |
+  |---|---|---|---|
+  | RUSTSEC-2026-0221 | event-listener | 5.4.1 | 5.4.2 |
+  | RUSTSEC-2026-0204 | crossbeam-epoch | 0.9.18 | 0.9.20 |
+  | RUSTSEC-2026-0190 | anyhow | 1.0.102 | 1.0.104 |
+  | RUSTSEC-2026-0185 | quinn-proto | 0.11.14 | 0.11.15 |
+  | RUSTSEC-2026-0258 | h2 | 0.4.14 | 0.4.17 |
+
+  The h2 advisory (published 2026-08-17) was not one of the four the work
+  started from; it surfaced while verifying the batch with `cargo audit` and
+  is fixed here too, so the audit goes green rather than trading four
+  advisories for one. `concurrent-queue` drops out of the lockfile as a side
+  effect, because event-listener 5.4.2 no longer depends on it.
+
 ### Fixed
 
 - **`connectors` example works against a real stack.** The Amadeus install
   hardcoded a nonexistent `demo-tenant` (tripping the platform's tenant FK)
   and `environment=production` (Amadeus self-service keys are
-  test-environment keys — production auth 401s). It now defaults the tenant
+  test-environment keys - production auth 401s). It now defaults the tenant
   to the caller's own (`AXONFLOW_TENANT_ID` overrides), defaults the Amadeus
   environment to `test` (`AMADEUS_ENVIRONMENT` overrides), skips the install
   when the connector is already installed so the example is re-runnable, and
@@ -20,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a natural-language string the connector rejects as an unsupported
   operation.
 
-## [0.8.1] - 2026-07-09 — execute_plan status + example fixes
+## [0.8.1] - 2026-07-09 - execute_plan status + example fixes
 
 Hostile-testing sweep ahead of the BukuWarung integration
 (getaxonflow/axonflow-enterprise#2861). One library fix (`execute_plan`
@@ -33,7 +56,7 @@ status semantics) + example fixes.
   deserialized to `""` and callers treated every successful execution as a
   failure. The default is now derived from the envelope verdict:
   `"completed"` only when `success && !blocked`, else `"failed"` (with the
-  envelope error carried over) — a policy-blocked/failed plan can never
+  envelope error carried over) - a policy-blocked/failed plan can never
   read as completed. An explicit wire `status` is preserved. Regression
   tests cover all three paths.
 - **Examples pass `AXONFLOW_USER_TOKEN` and fail honestly.** Enterprise
@@ -49,7 +72,7 @@ status semantics) + example fixes.
   `AXONFLOW_AGENT_URL`/`AXONFLOW_CLIENT_ID`/`AXONFLOW_CLIENT_SECRET`/
   `AXONFLOW_USER_TOKEN` and exit non-zero on failure.
 
-## [0.8.0] - 2026-06-29 — Performance & reliability hardening
+## [0.8.0] - 2026-06-29 - Performance & reliability hardening
 
 A hygiene and performance pass across the SDK. Behavior on the wire is
 unchanged; the one source-compatibility note is the new `CacheConfig`
@@ -57,11 +80,11 @@ field called out under **Changed** below.
 
 ### Added
 
-- **`CacheConfig::max_capacity`** (default `10_000`) — the in-memory response
+- **`CacheConfig::max_capacity`** (default `10_000`) - the in-memory response
   cache is now bounded and evicts least-recently-used entries once full,
   preventing unbounded memory growth in long-running processes. Set a higher or
   lower limit to tune the memory/hit-rate trade-off.
-- **`WrappedOpenAIClient::with_provider(provider)`** — a builder method to record
+- **`WrappedOpenAIClient::with_provider(provider)`** - a builder method to record
   the actual upstream provider (e.g. `"azure"`, `"together"`) in the audit
   trail when calling through a proxy or an OpenAI-compatible API. Defaults to
   `"openai"`.
@@ -78,10 +101,10 @@ field called out under **Changed** below.
   Code that constructs `CacheConfig` with a struct literal must add the field or
   use `..Default::default()`; code that relies on `CacheConfig::default()` is
   unaffected.
-- **HTTP connection reuse** — both HTTP clients now enable idle connection
+- **HTTP connection reuse** - both HTTP clients now enable idle connection
   pooling and TCP keepalive, reducing connection churn and latency under
   sustained load.
-- **Non-blocking heartbeat I/O** — the background telemetry heartbeat no longer
+- **Non-blocking heartbeat I/O** - the background telemetry heartbeat no longer
   performs blocking filesystem writes on the async runtime.
 - The audit trail now records the configured provider rather than always
   reporting `"openai"`.
@@ -96,13 +119,13 @@ field called out under **Changed** below.
   instead of being silently discarded.
 - Telemetry heartbeat instance identifiers now use standard UUIDv4 generation.
 
-## [0.7.0] - 2026-06-09 — Decision Mode PEP (decide → fulfill → forward)
+## [0.7.0] - 2026-06-09 - Decision Mode PEP (decide → fulfill → forward)
 
 Adds the SDK analog of `platform/shared/pep` (ADR-056, epic
 getaxonflow/axonflow-enterprise#2563, tracking #2571): a **decide → fulfill →
 forward** Policy Enforcement Point. `decide()` surfaces engine-fulfillable
 `redact_pii` obligations; `fulfill_request()` discharges them by round-tripping
-content through the engine endpoint each obligation names — **never by redacting
+content through the engine endpoint each obligation names - **never by redacting
 locally**. The SDK carries no redaction logic of its own: there is no regex, no
 pattern table, no masking branch. An obligation the engine cannot discharge
 **fails closed** (`AxonFlowError::ObligationNotFulfillable`) rather than
@@ -110,13 +133,13 @@ forwarding unredacted content.
 
 ### Added
 
-- **`AxonFlowClient::decide(DecideRequest) -> DecideResponse`** — `POST
+- **`AxonFlowClient::decide(DecideRequest) -> DecideResponse`** - `POST
   /api/v1/decide` using the client's existing HTTP Basic (`org:license`) auth.
   401 (bad / demo credentials) surfaces as `AxonFlowError::ApiError { status:
   401, .. }`; a `deny` verdict is returned in the body (HTTP 200), not as an
   error.
 - **`AxonFlowClient::fulfill_request(&DecideResponse, &str) -> (String, bool)`**
-  — for each request-phase `redact_pii` obligation, POSTs the statement to the
+  - for each request-phase `redact_pii` obligation, POSTs the statement to the
   obligation's check-input endpoint and returns the engine-redacted content plus
   whether the engine changed it. **Fails closed** (returns
   `AxonFlowError::ObligationNotFulfillable`, never the original statement) when:
@@ -125,11 +148,11 @@ forwarding unredacted content.
   rejected); the engine call fails / returns non-200; or `redaction_evaluated`
   is false/absent.
 - **`AxonFlowClient::decide_and_fulfill(DecideRequest) -> (verdict, content,
-  DecideResponse)`** — one-call PEP path. On a non-allow verdict returns the
+  DecideResponse)`** - one-call PEP path. On a non-allow verdict returns the
   original query (caller blocks anyway); on allow returns engine-redacted
   content. On an unfulfillable obligation it surfaces the fail-closed error so a
   caller cannot accidentally forward the unredacted query.
-- **`has_request_redaction(&[Obligation]) -> bool`** free function — branch on
+- **`has_request_redaction(&[Obligation]) -> bool`** free function - branch on
   whether a verdict carries request-phase redaction work.
 - **PEP types** in `axonflow_sdk_rust::types::pep`, re-exported from the crate
   root: `DecideRequest`, `DecideResponse`, `Obligation`,
@@ -142,7 +165,7 @@ forwarding unredacted content.
   **`redaction_evaluated` on `MCPCheckOutputResponse`**. All `#[serde(default)]`
   so older platforms deserialize cleanly (the fail-closed default for
   `redaction_evaluated` is `false`).
-- **`AxonFlowError::ObligationNotFulfillable(String)`** — the fail-closed signal
+- **`AxonFlowError::ObligationNotFulfillable(String)`** - the fail-closed signal
   of the PEP contract. Non-retryable and not fail-open-eligible.
 - **PEP contract constants** (`OBLIGATION_REDACT_PII`, `PHASE_REQUEST` /
   `PHASE_RESPONSE`, `CONTENT_TYPE_TEXT`, `VERDICT_ALLOW` / `VERDICT_DENY` /
@@ -156,7 +179,7 @@ forwarding unredacted content.
   nothing, non-redact obligation type), `endpoint_path_matches` exact/absolute/
   foreign, `has_request_redaction`, and `decide_and_fulfill`
   allow/deny/unfulfillable.
-- **`runtime-e2e/decide_fulfill_obligation/`** — bash runner + Rust helper crate
+- **`runtime-e2e/decide_fulfill_obligation/`** - bash runner + Rust helper crate
   exercising the real SDK against a live enterprise agent (NO mocks): proves
   decide → allow + obligation; fulfill → engine-masked content where neither
   `john.doe@example.com` nor `4111111111111111` survives; `decide_and_fulfill`
@@ -166,7 +189,7 @@ forwarding unredacted content.
 
 Additive. No existing public API is changed; no removed fields; no changed
 defaults. The new request/response fields are an acknowledged SDK superset of
-the wire contract — older platforms ignore the extra request field and the
+the wire contract - older platforms ignore the extra request field and the
 SDK's `#[serde(default)]` keeps response parsing fail-closed when the platform
 predates the redaction fields. Minor version bump 0.6.0 → 0.7.0 (SDK semver is
 decoupled from the platform version).
@@ -176,13 +199,13 @@ for the `decide` / `decide_and_fulfill` path; `fulfill_request` requires the
 request-redaction `redact_pii` capability on `/api/v1/mcp/check-input`.
 
 Cross-SDK parity: getaxonflow/axonflow-enterprise#2571.
-## [0.6.0] - 2026-05-30 — Decision request context + Pasal 56(b) transfer basis
+## [0.6.0] - 2026-05-30 - Decision request context + Pasal 56(b) transfer basis
 
 Targets AxonFlow platform **v8.5.0**.
 
 ### Added
 
-- **`context` field on `DecisionSummary` and `DecisionExplanation`** —
+- **`context` field on `DecisionSummary` and `DecisionExplanation`** -
   `Option<HashMap<String, String>>` with `#[serde(default, skip_serializing_if =
   "Option::is_none")]`. Surfaces the sanitized request context a PEP attaches to a
   Decision Mode call (canonical `lower_snake_case` keys such as `x_ai_agent`,
@@ -190,7 +213,7 @@ Targets AxonFlow platform **v8.5.0**.
   platform at the audit row's `policy_details->'context'`. `list_decisions`
   returns the platform-truncated summary (5 keys); `explain_decision` returns the
   full map. `None` for pre-v0.6.0 audit rows.
-- **`context_truncated` field on `DecisionExplanation`** — `bool`. True when the
+- **`context_truncated` field on `DecisionExplanation`** - `bool`. True when the
   agent dropped surplus context keys at write time.
 - **`transfer_basis` module constants** (`transfer_basis::ADEQUACY`,
   `transfer_basis::SAFEGUARDS`, `transfer_basis::PASAL_56B_DPA` = `"pasal_56b_dpa"`,
@@ -205,7 +228,7 @@ Targets AxonFlow platform **v8.5.0**.
   code matching on `"safeguards"` is unaffected and the SDK never rejects a value
   a newer platform may add.
 
-## [0.5.0] - 2026-05-27 — Indonesia PII category + cross-border audit fields
+## [0.5.0] - 2026-05-27 - Indonesia PII category + cross-border audit fields
 
 ### Added
 
@@ -216,11 +239,11 @@ Targets AxonFlow platform **v8.5.0**.
   `data_residency` and `transfer_basis` for cross-border data transfer
   logging. Both are `Option<String>` for backward compatibility.
 
-## [0.4.0] - 2026-05-23 — Full HITL surface (`list` / `get` / `create` / `approve` / `reject` / `stats`)
+## [0.4.0] - 2026-05-23 - Full HITL surface (`list` / `get` / `create` / `approve` / `reject` / `stats`)
 
 Cross-SDK parity bring-up for HITL (Human-in-the-Loop) approval
 workflows. Prior to this release the Rust SDK exposed **no** HITL
-methods at all — the four stable SDKs (Python / TS / Go / Java) all
+methods at all - the four stable SDKs (Python / TS / Go / Java) all
 ship the read + review surface (`list_hitl_queue`, `get_hitl_request`,
 `approve_hitl_request`, `reject_hitl_request`, `get_hitl_stats`),
 plus the new `create_hitl_request` method introduced in v8.2.0 of
@@ -243,7 +266,7 @@ can implement the full 4-step HITL flow against AxonFlow:
   framework, an expiry override, and the new `notify_url` callback.
   Server-side `X-Org-ID` / `X-Tenant-ID` headers are derived by the
   platform's auth middleware from the SDK client's configured
-  credentials — callers do not pass them through this method.
+  credentials - callers do not pass them through this method.
 - **`AxonFlowClient::approve_hitl_request(request_id: &str, review: HITLReviewInput) -> ()`**
   and the symmetric **`reject_hitl_request`**.
 - **`AxonFlowClient::get_hitl_stats() -> HITLStats`**.
@@ -279,14 +302,14 @@ and `Idempotency-Key` request deduplication.
 
 Cross-SDK parity sweep: getaxonflow/axonflow-enterprise#2421.
 
-## [0.3.1] - 2026-05-22 — `runtime-e2e/x-client-id/` parity + `org_id` in telemetry heartbeat + retry-allowlist regression tests
+## [0.3.1] - 2026-05-22 - `runtime-e2e/x-client-id/` parity + `org_id` in telemetry heartbeat + retry-allowlist regression tests
 
 Patch release. No SDK behavior changes for the X-Client-ID + retry
 path; one additive wire field (`org_id`) on the telemetry heartbeat.
 
 ### Added
 
-- **`runtime-e2e/x-client-id/`** runner — bash entry point plus a Rust
+- **`runtime-e2e/x-client-id/`** runner - bash entry point plus a Rust
  helper crate. Mirrors the Go / Python / TypeScript / Java SDKs'
  `runtime-e2e/x-client-id/` directories. Brings up the public community
  docker-compose stack, then runs an in-process forwarding-proxy helper
@@ -295,11 +318,11 @@ path; one additive wire field (`org_id`) on the telemetry heartbeat.
  `sdk-rust/`, `Authorization` starts with `Basic `, and `X-Tenant-ID`
  is absent. This is the wire-level companion to the unit test
  (`tests/x_client_id_header_test.rs`), which uses `wiremock` and is
- necessary but not sufficient — it can't catch contract drift between
+ necessary but not sufficient - it can't catch contract drift between
  the SDK and the live community-stack agent in the same PR that causes
  it.
 - **`org_id` field in the telemetry heartbeat body.** Brings the Rust
- SDK telemetry up to parity with the other four SDKs and the platform —
+ SDK telemetry up to parity with the other four SDKs and the platform -
  every heartbeat now identifies which deployment-organization emitted
  it. Two sources in precedence order:
  1. The `ORG_ID` env var when set (the explicit configuration
@@ -324,7 +347,7 @@ path; one additive wire field (`org_id`) on the telemetry heartbeat.
 
 - **Telemetry-enabled log line** softened from "Anonymous telemetry
  enabled" to "Telemetry enabled" to stay coherent with the `org_id`
- addition — the configured `ORG_ID` on self-hosted deployments is not
+ addition - the configured `ORG_ID` on self-hosted deployments is not
  anonymized; only the `instance_id` and `cs_<uuid>` Community SaaS
  identifier remain anonymous-by-design.
 
@@ -340,7 +363,7 @@ path; one additive wire field (`org_id`) on the telemetry heartbeat.
  / `*status != 403` clauses in the allowlist are intentional defense
  against any future refactor that converts 402/403 back to errors.
 
-## [0.3.0] - 2026-05-19 — `X-Axonflow-Client` + `X-Client-ID` headers on every outbound request (v9 identity)
+## [0.3.0] - 2026-05-19 - `X-Axonflow-Client` + `X-Client-ID` headers on every outbound request (v9 identity)
 
 Companion release to the v9 identity cleanup on the platform. Two
 header additions.
@@ -348,13 +371,13 @@ header additions.
 ### Added
 
 - **`X-Axonflow-Client: sdk-rust/<version>` header.** This was missing
- in v0.2.0 — a pre-existing gap relative to the four stable SDKs.
+ in v0.2.0 - a pre-existing gap relative to the four stable SDKs.
  Every governed request now carries it so the platform can derive
  request scope (sdk) and validate against the token's audience scope.
  Sourced from `CARGO_PKG_VERSION`; no env override (the consumer
  doesn't get to spoof its own client identity to the platform).
 - **`X-Client-ID: <effective_client_id>` header.** Value matches the
- SDK's Basic Auth username — smart default `community` when no
+ SDK's Basic Auth username - smart default `community` when no
  `client_id` is configured. Server-side identity decisions no longer
  need to re-decode Basic Auth. The platform's auth middleware
  overwrites the header with its own auth-derived value, so
@@ -369,7 +392,7 @@ construction time so every endpoint picks them up.
  unknown header; v9 agents derive identity from Basic Auth regardless.
 - No SDK config changes. No removed fields. No changed defaults.
 
-## [0.2.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision + Anthropic interceptor + telemetry simplification
+## [0.2.0] - 2026-05-09 - Decision History API + policy_version recorded on every decision + Anthropic interceptor + telemetry simplification
 
 **Preview release.** The headline feature is the new decision-history client API
 (`list_decisions`) plus the `explain_decision` example, both bringing Rust to
@@ -379,21 +402,21 @@ measurable consistently across all five SDKs.
 
 ### Added
 
-- **`list_decisions(opts)`** client method paging through recorded decision history from the orchestrator. Mirrors `GET /api/v1/decisions`. Companion to `explain_decision` — list and drill in. See `examples/list_decisions/`.
+- **`list_decisions(opts)`** client method paging through recorded decision history from the orchestrator. Mirrors `GET /api/v1/decisions`. Companion to `explain_decision` - list and drill in. See `examples/list_decisions/`.
 - **`AxonFlowConfig::sandbox(client_id, client_secret)`** convenience constructor for local testing. Defaults to `http://localhost:8080`, sets `mode = Mode::Sandbox`, enables debug logging. Parity with Go's `Sandbox()`, Python's `.sandbox()`, TypeScript's `AxonFlow.sandbox()`, Java's `AxonFlow.sandbox(url)`.
 - **`WrappedAnthropicClient` invisible-governance interceptor for Anthropic models.** Wrap any client implementing `AnthropicMessageCreator` and AxonFlow pre-checks policy on every `create_message` call, blocks denied calls, and asynchronously audits successful responses. Mirrors the existing `WrappedOpenAIClient` pattern; supports the Anthropic Messages-API request shape (required `max_tokens`, optional `system`). New `examples/anthropic_interceptor/` shows the end-to-end flow.
 
 ### Decision explainability
 
-- **`client.explain_decision(decision_id)`** carried forward — fetches the structured `DecisionExplanation` for a previously-made policy decision (matched policies, risk level, override availability, historical hit count, tool signature). New `examples/explain_decision/` shows the end-to-end pattern.
+- **`client.explain_decision(decision_id)`** carried forward - fetches the structured `DecisionExplanation` for a previously-made policy decision (matched policies, risk level, override availability, historical hit count, tool signature). New `examples/explain_decision/` shows the end-to-end pattern.
 
 ### Fixed
 
-- **URL-encoding parity with the other SDKs.** Path parameters (`connector_id`, `plan_id`, `decision_id`) were percent-encoded with `NON_ALPHANUMERIC`, which over-escapes the RFC-3986 unreserved characters `_`, `-`, `.`, `~`. Connector IDs like `amadeus-travel` were going on the wire as `amadeus%2Dtravel` — wrong wire form that stricter routers would 404. Replaced with a path-segment encode set matching Go's `url.PathEscape` semantics.
+- **URL-encoding parity with the other SDKs.** Path parameters (`connector_id`, `plan_id`, `decision_id`) were percent-encoded with `NON_ALPHANUMERIC`, which over-escapes the RFC-3986 unreserved characters `_`, `-`, `.`, `~`. Connector IDs like `amadeus-travel` were going on the wire as `amadeus%2Dtravel` - wrong wire form that stricter routers would 404. Replaced with a path-segment encode set matching Go's `url.PathEscape` semantics.
 
 ### Telemetry
 
-- **Heartbeat endpoint moves to central checkpoint** (`https://checkpoint.getaxonflow.com/v1/ping`). Pre-v0.2 the Rust SDK pinged the local agent — useful for proxy debugging but invisible to the central pipeline. Now in parity with the other four SDKs.
+- **Heartbeat endpoint moves to central checkpoint** (`https://checkpoint.getaxonflow.com/v1/ping`). Pre-v0.2 the Rust SDK pinged the local agent - useful for proxy debugging but invisible to the central pipeline. Now in parity with the other four SDKs.
 - **`AXONFLOW_TELEMETRY=off` is the sole opt-out** (no programmatic disable; `DO_NOT_TRACK` intentionally NOT honored). Heartbeat payload expanded to the cross-SDK v1 shape (`telemetry_type`, `deployment_mode`, `endpoint_type`, `instance_id`, `stream`); sandbox clients tag `stream="sandbox"`. 7-day per-machine cadence + stamp-on-delivery unchanged.
 
 ### Maintenance
@@ -402,13 +425,13 @@ measurable consistently across all five SDKs.
 
 ## [0.1.0] - 2026-05-05
 
-Initial release of the AxonFlow Rust SDK. The foundation was contributed voluntarily by [@fpierfed](https://github.com/fpierfed) — see [CONTRIBUTORS.md](CONTRIBUTORS.md).
+Initial release of the AxonFlow Rust SDK. The foundation was contributed voluntarily by [@fpierfed](https://github.com/fpierfed) - see [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ### Added
 
 **Core client (`AxonFlowClient`):**
-- `proxy_llm_call` — send governed queries through the AxonFlow agent.
-- `audit_llm_call` — gateway-mode logging for direct LLM calls.
+- `proxy_llm_call` - send governed queries through the AxonFlow agent.
+- `audit_llm_call` - gateway-mode logging for direct LLM calls.
 - HTTP Basic auth with a `community:` default tenant when no credentials are configured. With credentials: `Authorization: Basic base64(client_id:client_secret)`.
 - `X-License-Key` header support for enterprise mode (`AxonFlowConfig::with_license_key`); marked sensitive and redacted in `Debug`.
 - Production fail-open + Sandbox propagate-error modes.
@@ -430,18 +453,18 @@ Initial release of the AxonFlow Rust SDK. The foundation was contributed volunta
 - `AxonFlowConfig` builder (`with_auth`, `with_license_key`, `with_mode`, `with_timeout`, `with_map_timeout`, `with_retry`, `with_cache`).
 - Custom `Debug` redacts `client_secret` and `license_key`.
 - URL-encodes user-supplied path parameters (connector_id, plan_id).
-- Tokio-runtime guard on the heartbeat — safe to construct without an active runtime.
+- Tokio-runtime guard on the heartbeat - safe to construct without an active runtime.
 - `AXONFLOW_INSECURE_TLS=1` env to skip TLS verification (debug only). `AXONFLOW_TRY=1` short-circuit for the hosted try endpoint.
 
 **Telemetry:**
 - 7-day machine-global anonymous heartbeat for licensing compliance.
-- Honors `AXONFLOW_TELEMETRY=off` as the documented opt-out. `DO_NOT_TRACK` is intentionally NOT honored — it is commonly inherited from a parent shell.
+- Honors `AXONFLOW_TELEMETRY=off` as the documented opt-out. `DO_NOT_TRACK` is intentionally NOT honored - it is commonly inherited from a parent shell.
 
 **Examples (runnable):**
-- `cargo run --example basic` — proxy mode with PII redaction demo.
-- `cargo run --example connectors` — list / install / query MCP connectors.
-- `cargo run --example planning` — generate + execute a multi-agent plan.
-- `cargo run --example interceptors` — invisible governance via `WrappedOpenAIClient`.
+- `cargo run --example basic` - proxy mode with PII redaction demo.
+- `cargo run --example connectors` - list / install / query MCP connectors.
+- `cargo run --example planning` - generate + execute a multi-agent plan.
+- `cargo run --example interceptors` - invisible governance via `WrappedOpenAIClient`.
 
 **Tests:**
 - 17 integration tests via `httpmock` covering proxy / blocked / fail-open / cache / mutation-bypass / retry / list-connectors / generate-plan / install-connector / get-plan-status / cancel-plan, plus the auth-header contract (community default, OAuth2 with creds, clientID-only-no-secret) and `X-License-Key` presence/absence.
@@ -457,4 +480,4 @@ Initial release of the AxonFlow Rust SDK. The foundation was contributed volunta
 
 ### Notes
 
-This is a preview release. The Rust SDK currently covers a subset of the surface available in the established Go / Python / TypeScript / Java SDKs (which are at v7.6.x and ship the full governance / workflow / cost / compliance surface). Subsequent releases will expand parity in well-scoped phases — track upcoming work in the [Issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
+This is a preview release. The Rust SDK currently covers a subset of the surface available in the established Go / Python / TypeScript / Java SDKs (which are at v7.6.x and ship the full governance / workflow / cost / compliance surface). Subsequent releases will expand parity in well-scoped phases - track upcoming work in the [Issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
