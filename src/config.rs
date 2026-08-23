@@ -171,3 +171,83 @@ impl AxonFlowConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn retry_config_default_matches_docs() {
+        let retry = RetryConfig::default();
+        assert!(retry.enabled);
+        assert_eq!(retry.max_attempts, 3);
+        assert_eq!(retry.initial_delay, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn cache_config_default_matches_docs() {
+        let cache = CacheConfig::default();
+        assert!(cache.enabled);
+        assert_eq!(cache.ttl, Duration::from_secs(60));
+        assert_eq!(cache.max_capacity, 10_000);
+    }
+
+    #[test]
+    fn axonflow_config_default_and_new() {
+        let default = AxonFlowConfig::default();
+        assert_eq!(default.endpoint, "");
+        assert_eq!(default.client_id, None);
+        assert_eq!(default.client_secret, None);
+        assert_eq!(default.license_key, None);
+        assert_eq!(default.mode, Mode::Production);
+        assert!(!default.debug);
+        assert_eq!(default.timeout, Duration::from_secs(60));
+        assert_eq!(default.map_timeout, Duration::from_secs(120));
+        assert!(!default.insecure_skip_tls_verify);
+        assert_eq!(default.retry.max_attempts, 3);
+        assert_eq!(default.cache.max_capacity, 10_000);
+
+        let cfg = AxonFlowConfig::new("https://api.example.com");
+        assert_eq!(cfg.endpoint, "https://api.example.com");
+        assert_eq!(cfg.mode, Mode::Production);
+        assert_eq!(cfg.timeout, Duration::from_secs(60));
+        assert_eq!(cfg.retry.max_attempts, 3);
+        assert_eq!(cfg.cache.ttl, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn sandbox_constructor_sets_local_defaults() {
+        let cfg = AxonFlowConfig::sandbox("cid", "csecret");
+        assert_eq!(cfg.endpoint, "http://localhost:8080");
+        assert_eq!(cfg.client_id.as_deref(), Some("cid"));
+        assert_eq!(cfg.client_secret.as_deref(), Some("csecret"));
+        assert_eq!(cfg.mode, Mode::Sandbox);
+        assert!(cfg.debug);
+        // remaining fields stay at Default
+        assert_eq!(cfg.timeout, Duration::from_secs(60));
+        assert_eq!(cfg.license_key, None);
+    }
+
+    #[test]
+    fn builder_methods_set_only_their_fields() {
+        let base = AxonFlowConfig::new("https://api.example.com");
+
+        let with_auth = base.clone().with_auth("id", "secret");
+        assert_eq!(with_auth.client_id.as_deref(), Some("id"));
+        assert_eq!(with_auth.client_secret.as_deref(), Some("secret"));
+        assert_eq!(with_auth.endpoint, "https://api.example.com");
+        assert_eq!(with_auth.mode, Mode::Production);
+        assert_eq!(with_auth.license_key, None);
+
+        let with_key = base.clone().with_license_key("lic-123");
+        assert_eq!(with_key.license_key.as_deref(), Some("lic-123"));
+        assert_eq!(with_key.client_id, None);
+        assert_eq!(with_key.endpoint, "https://api.example.com");
+
+        let with_mode = base.clone().with_mode(Mode::Sandbox);
+        assert_eq!(with_mode.mode, Mode::Sandbox);
+        assert_eq!(with_mode.endpoint, "https://api.example.com");
+        assert_eq!(with_mode.client_id, None);
+    }
+}
