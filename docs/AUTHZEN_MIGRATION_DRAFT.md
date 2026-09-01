@@ -1,6 +1,6 @@
 # Moving to the AuthZEN surface - DRAFT, not in effect
 
-> **Status: DRAFT.** Nothing in this document is deprecated. The existing decision surface is wire-stable through all of v11, and no timeline below is committed until this file loses its DRAFT marker. It is written now, and shipped now, so that the shape of the eventual migration is visible while it can still be argued with.
+> **Status: DRAFT. Nothing here is deprecated today.** The existing decision surface is wire-stable through all of v11. It is written now, and shipped now, so that customers have a migration target *during* the shadow window rather than being handed one at the moment the default flips. The DRAFT marker governs when this text moves into the README and the public docs site; it does not make the timeline below provisional. The v11.0.0 deprecation and the v12.0.0 removal are set by the ADR-065 release and compatibility plan, not by this file.
 
 ## Why this exists before there is anything to migrate
 
@@ -8,13 +8,18 @@ Deprecating the legacy surface today would tell people to move off something tha
 
 The short version: **write new integrations against `evaluate` / `evaluate_all`. Leave working integrations alone.**
 
-## What changes, and when
+## Timeline
 
 | release | the AuthZEN surface | the legacy decision surface |
 |---|---|---|
-| v10.3 (this) | ships, unreleased-to-deprecation. An **adapter** over the same evaluation `POST /api/v1/decide` runs. | unchanged, byte for byte |
-| v11 | the engine behind it becomes the ADR-065 Policy Decision Point. **No wire change.** | unchanged, wire-stable |
-| after v11 | the surface for everything | a deprecation may be *proposed*; it is not scheduled here |
+| v10.3.0 (this, crate 0.9.0) | New. Available. Recommended for new integrations. An **adapter** over the same evaluation `POST /api/v1/decide` runs. | Fully supported. Not deprecated. No warnings. Unchanged, byte for byte. |
+| v10.3.x | unchanged | unchanged |
+| **v11.0.0** | the engine behind it becomes the ADR-065 Policy Decision Point. **No wire change.** | **Deprecated.** Still works; wire-stable. Doc + release-note notice. |
+| v12.0.0 | the only decision surface | **Removed.** |
+
+The releases named here are AxonFlow platform releases. This crate carries its own pre-1.0 version line; the platform v10.3.0 train ships as crate 0.9.0.
+
+The legacy surface is **wire-stable through all of v11**. A v10.x integration keeps working on v11 without edits; deprecation is a signal to plan, not a breakage.
 
 The v11 engine swap is the reason to prefer this surface now. An integration written against `/api/v1/decide` migrates twice - once to a new shape, once when the engine changes. One written against `evaluate` migrates zero times: the same call, the same types, a different evaluator underneath.
 
@@ -52,7 +57,6 @@ Practically: port one call, run it, and read the pointers. The refusal names the
 
 ## What has not been decided
 
-- Whether the legacy surface is ever deprecated, and on what notice.
 - Whether an end-user subject becomes available at v11 or later, and what the identity plane requires of a caller to bind one.
 - Whether `resource.id` for an `llm` target widens to name a provider and model, which depends on the evaluator learning to read them.
 
