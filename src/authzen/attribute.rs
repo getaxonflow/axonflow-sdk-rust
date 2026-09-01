@@ -350,11 +350,22 @@ impl AttributeMap {
     /// Returns whether the value was written, for a caller that wants to know.
     pub fn record(&mut self, key: impl Into<String>, value: Attribute<AttributeValue>) -> bool {
         let key = key.into();
-        if matches!(self.0.get(&key), Some(Attribute::Unknown(_))) {
+        if self.holds_unresolved(&key) {
             return false;
         }
         self.0.insert(key, value);
         true
+    }
+
+    /// Whether `key` holds an attribute nobody could resolve.
+    ///
+    /// ONE place, used by both writes. The rule was duplicated across
+    /// [`AttributeMap::record`] and [`AttributeMap::nested_for_write`], and the
+    /// duplication was not academic: the two guards read almost identically, so
+    /// a mutation aimed at one silently hit the other and a guard nothing was
+    /// holding in place looked covered. The sibling Java SDK's gate caught it.
+    fn holds_unresolved(&self, key: &str) -> bool {
+        matches!(self.0.get(key), Some(Attribute::Unknown(_)))
     }
 
     /// Records a resolved value.
@@ -402,8 +413,10 @@ impl AttributeMap {
     /// guarding one and not the other is how the first version of this fix left
     /// the defect reachable one level down.
     pub(crate) fn nested_for_write(&mut self, key: &str) -> Option<&mut AttributeMap> {
+        if self.holds_unresolved(key) {
+            return None;
+        }
         match self.0.get(key) {
-            Some(Attribute::Unknown(_)) => return None,
             Some(Attribute::Known(value)) if value.as_nested().is_some() => {}
             _ => {
                 self.insert_known(key, AttributeMap::new());
