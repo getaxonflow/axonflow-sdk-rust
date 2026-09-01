@@ -1,3 +1,17 @@
+# The generator for `src/authzen/types_gen.rs` is a workspace member rather
+# than a module of this crate: a code generator has no business being compiled
+# into a published SDK, and `default-members` keeps `cargo test`, `cargo clippy`
+# and `cargo fmt` covering it without a second CI job.
+[workspace]
+members = ["tools/gen-authzen-types"]
+# Each runtime-e2e helper is a STANDALONE crate with its own lockfile, built by
+# its own `test.sh` against a live agent. Adding a workspace at the SDK root
+# would otherwise capture them - cargo walks up from a crate to the nearest
+# `[workspace]` - and every helper would fail to build with "not a member of
+# workspace" the moment this file gained one.
+exclude = ["runtime-e2e"]
+default-members = [".", "tools/gen-authzen-types"]
+
 [package]
 name = "axonflow-sdk-rust"
 version = "0.8.2"
@@ -10,6 +24,11 @@ homepage = "https://getaxonflow.com"
 documentation = "https://docs.rs/axonflow-sdk-rust"
 readme = "README.md"
 keywords = ["ai", "governance", "llm", "sdk"]
+# The generator is a build tool, not part of the published library.
+# `testdata/authzen-surface.json` is deliberately NOT excluded: it is the input
+# the committed types were generated from, and a consumer auditing the SDK
+# should be able to regenerate them from what the crate ships.
+exclude = ["tools/**"]
 categories = ["api-bindings", "web-programming::http-client"]
 
 [dependencies]
@@ -34,6 +53,14 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3.10"
+# Path-only, so it is stripped from the published manifest. It exists so the
+# check that the committed generated file is current runs inside `cargo test`
+# rather than in a workflow step somebody can forget to add.
+axonflow-authzen-codegen = { path = "tools/gen-authzen-types" }
+
+[[example]]
+name = "authzen"
+path = "examples/authzen/main.rs"
 
 [[example]]
 name = "basic"

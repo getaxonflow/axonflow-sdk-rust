@@ -71,10 +71,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "axonflow-authzen-codegen"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "axonflow-sdk-rust"
 version = "0.8.2"
 dependencies = [
  "async-trait",
+ "axonflow-authzen-codegen",
  "base64",
  "chrono",
  "home",

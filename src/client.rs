@@ -485,6 +485,38 @@ impl AxonFlowClient {
         Ok(self.http_client.get(url).send().await?)
     }
 
+    /// Crate-internal POST of an already-encoded body with per-request headers,
+    /// returning the raw response without translating non-2xx.
+    ///
+    /// It exists so the AuthZEN surface can negotiate a profile header and read
+    /// a typed refusal off a 4xx body, on THIS client - the one carrying the
+    /// configured timeout, TLS posture, pool and the Basic-auth default headers
+    /// every other call already uses. A second `reqwest::Client` built beside it
+    /// would be a second transport with its own opinions about all four, and
+    /// the two would drift on the first configuration change.
+    ///
+    /// The body arrives pre-encoded rather than as `impl Serialize` because the
+    /// caller has to be able to report an ENCODING failure in its own
+    /// vocabulary: an attribute nobody could resolve has no wire form, and
+    /// `reqwest`'s `.json()` would surface that as a transport error.
+    pub(crate) async fn raw_post_json_bytes(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        headers: &[(&str, &str)],
+    ) -> Result<reqwest::Response, AxonFlowError> {
+        let mut request = self
+            .http_client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(body);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        Ok(request.send().await?)
+    }
+
     async fn checked_map_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
         let resp = self.map_http_client.get(url).send().await?;
         Self::check_status(resp).await
