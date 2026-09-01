@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-01: AuthZEN-native authorization surface
+
 ### Added
 
 - AuthZEN-native authorization surface (ADR-065, enterprise #3603 / #3616).
@@ -42,6 +44,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   artifact gains a value, which is what ADR-065 does at v11. The attribute is
   emitted by `tools/gen-authzen-types` rather than written into the generated
   file, so it cannot drift away from the artifact.
+
+- **Documentation.** `README.md` gains an "AuthZEN-native authorization"
+  section covering the call shape, the refusal contract, bulk semantics,
+  obligations and the known gotchas. `docs/AUTHZEN_MIGRATION_DRAFT.md` carries
+  the field-by-field mapping table; it is a DRAFT held out of the README on
+  purpose, because nothing is deprecated today.
+- **Runnable proofs**: `cargo run --example authzen` and
+  `runtime-e2e/authzen_evaluation/` (the latter runs against a live agent).
+
+### Migration notes
+
+- **No migration is required.** A 0.8.2 integration behaves identically on
+  0.9.0. `POST /api/v1/decide` and the gateway/proxy methods are unchanged,
+  still supported, and wire-stable through all of v11. The notes below apply
+  only if you choose to move an integration onto the new surface.
+- The mapping is mechanical: `stage: "llm"` becomes
+  `action.name = "llm.completion"` with `resource.type = "llm"`,
+  `stage: "tool"` becomes `tool.call` with `resource.id = "server/tool"`, and
+  `stage: "agent"` becomes `agent.invoke`. `query` moves to
+  `context.args.query` (`AuthZenRequest::with_query`),
+  `caller_identity.gateway_id` becomes `subject.id` with
+  `subject.type = "gateway"`, and `verdict` becomes the `decision` boolean plus
+  `context.state`, both of which `AuthZenDecision::allowed()` requires.
+- **The one behavioural difference to plan for**: the legacy surface accepted
+  members it did not read; the AuthZEN surface refuses them with a `422`
+  naming the exact member. Port one call, run it, and read the pointers; the
+  diff is mechanical. A refusal is a different outcome from a denial
+  (`Err(AuthZenEvaluationError::Refused(..))` versus `Ok(decision)` whose
+  `allowed()` is false), so a caller that branched on a boolean needs one more
+  arm.
+- **`Attribute` is three-valued and the wire is not.** Porting an integration
+  that resolves attributes from an identity provider or a trace propagator
+  means deciding, per attribute, whether a failure to resolve is `Absent`
+  (there is no value) or `Unknown` (nobody knows). The SDK refuses to send a
+  request carrying an unresolved attribute, locally, before the round trip.
+- `resource.id` for an `llm` target must be exactly `"llm"`; a provider or
+  model name is refused, because nothing reads it and accepting it would
+  report that it was considered when it was not.
+- The full table, and the list of what has deliberately NOT been decided, live
+  in `docs/AUTHZEN_MIGRATION_DRAFT.md`.
 
 ## [0.8.2] - 2026-08-20: five RUSTSEC advisories cleared
 
