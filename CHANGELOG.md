@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- AuthZEN-native authorization surface (ADR-065, enterprise #3603 / #3616).
+  `AxonFlowClient::evaluate` and `AxonFlowClient::evaluate_all` talk to
+  `POST /api/v1/access/evaluation`, with the wire types GENERATED from the
+  platform's canonical contract artifact (`testdata/authzen-surface.json`)
+  rather than transcribed. Nothing is deprecated: the existing decision surface
+  stays wire-stable through all of v11. This is the surface to write NEW
+  integrations against, because at v11 the engine behind it changes with no
+  wire change.
+- `Attribute<T>`, a genuinely three-valued attribute type. A resolved attribute
+  is `Known`, `Absent` (the source answered: there is no value) or `Unknown`
+  (the source could not answer), and `Option` carries two of those three. An
+  unknown attribute never reaches the wire: sending the request without it
+  would obtain a decision that weighed every attribute except the one nobody
+  could read, and report it as complete.
+- Typed refusals. `AuthZenEvaluationError` distinguishes a refusal, an
+  unreadable profile, an unusable response and a transport failure, and its
+  `retryable()` is the whole retryable set in one place; only
+  `evaluation_unavailable` and a transient transport failure are in it.
+
 ## [0.8.2] - 2026-08-20: five RUSTSEC advisories cleared
 
 ### Security
