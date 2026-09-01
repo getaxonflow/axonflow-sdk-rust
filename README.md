@@ -131,7 +131,7 @@ Then use `cargo run --example <name>` to execute an example:
     export AXONFLOW_DECISION_ID="dec_..." # from a recent blocked call or audit row
     cargo run --example explain_decision
     ```
-*   **AuthZEN-native authorization** (ADR-065) — nine steps, four of them refusals:
+*   **AuthZEN-native authorization** (ADR-065) — nine steps, four of them refusals or unresolved:
     ```bash
     cargo run --example authzen
     ```
@@ -179,6 +179,8 @@ for obligation in decision.mandatory_obligations() {
 | `Attribute::unknown(why)` | the source **could not answer** | never reaches the wire | `AuthZenEvaluationError::Unresolved`, before the round trip |
 
 Absent and unknown are not the same event. Dropping an unknown attribute from the request would obtain a decision that weighed every attribute except the one nobody could read — and report it as complete. That is the exact failure the server refuses on its side of the wire ("accepting it would report that it was considered when it was not"); `Attribute` is the same refusal on yours. Read a value with `Attribute::fold`, which does not compile until you have said what all three states mean; `as_known()` collapses two of them and is for logging.
+
+**A later write never overwrites an unresolved attribute.** `with_query` and `with_correlation` decline a write over an `Attribute::unknown`, at both the bag and the leaf, so a caller that recorded "nobody could read the request body" and then wrote a recovered partial query does not end up sending a complete-looking envelope. The declined write is not silent: the surviving unknown refuses the envelope at its own pointer, carrying the reason. `AttributeMap::insert` is the ordinary map write and DOES replace — use `record` if you want the rule.
 
 **Only one refusal code is worth retrying.** `AuthZenEvaluationError::retryable()` is the whole set in one place: a server refusal only when its code is `evaluation_unavailable`; a transport failure (timeout, connect, `5xx`, `429`); never an unreadable profile (retrying cannot make an older SDK able to read a newer one), never an unusable response, and never an unresolved attribute - that refusal is frozen inside the request, so every resend reproduces it. The OPERATION may succeed once the attribute resolves, but only after you build a new request.
 

@@ -15,7 +15,7 @@
 //! `if decision.allowed()` and nothing else, and the first refusal they meet in
 //! production is a string in a log.
 //!
-//! Steps 5 to 8 are refusals - four of the nine. Each one is an outcome a real
+//! Steps 5 to 8 are refusals or unresolved - four of the nine. Each one is an outcome a real
 //! gateway hits. Step 9 is the check a Policy Enforcement Point owes on the
 //! ALLOW path, which is the one people forget.
 

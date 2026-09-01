@@ -200,6 +200,46 @@ fn every_declared_type_and_enum_reaches_the_output() {
 }
 
 #[test]
+fn exactly_one_emitted_type_is_lenient_about_unknown_members() {
+    // The one special case in the emitter, pinned so it cannot silently widen or
+    // vanish. Strictness on a DECISION stops a caller acting on a partial
+    // reading; strictness on the DIAGNOSTIC costs the caller the code and the
+    // pointer, which is all a refusal is. If the artifact ever renames the
+    // refusal type, this goes red rather than quietly making everything strict
+    // again.
+    let out = render(&base_artifact()).expect("emits");
+    let lenient: Vec<&str> = out
+        .split("#[derive(")
+        .skip(1)
+        .filter(|chunk| !chunk.contains("#[serde(deny_unknown_fields)]"))
+        .filter_map(|chunk| chunk.split("pub struct ").nth(1))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    // The base fixture declares no refusal type, so every struct is strict.
+    assert!(
+        lenient.is_empty(),
+        "these types are lenient and should not be: {lenient:?}"
+    );
+
+    // And with a refusal type declared, exactly that one is lenient.
+    let mut with_refusal = base_artifact();
+    let refusal = serde_json::json!({
+        "name": "authzen_error",
+        "fields": [{"name": "code", "required": true, "type": {"kind": "string"}}]
+    });
+    with_refusal["types"].as_array_mut().unwrap().push(refusal);
+    let out = render(&with_refusal).expect("emits");
+    let lenient: Vec<&str> = out
+        .split("#[derive(")
+        .skip(1)
+        .filter(|chunk| !chunk.contains("#[serde(deny_unknown_fields)]"))
+        .filter_map(|chunk| chunk.split("pub struct ").nth(1))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    assert_eq!(lenient, vec!["AuthZenError"]);
+}
+
+#[test]
 fn generation_is_deterministic_over_repeated_runs() {
     // A leaked map ordering would make the SDK's "is the committed file
     // current?" check fail on unrelated pull requests until somebody deleted it

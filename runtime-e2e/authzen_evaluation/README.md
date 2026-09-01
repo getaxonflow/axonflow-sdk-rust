@@ -60,5 +60,5 @@ AXONFLOW_SAAS_URL=http://localhost:8090 \
 
 - `tests/authzen_surface_test.rs` - the response cases a live server will not produce on demand.
 - `tests/authzen_generated_types_are_current.rs` - the committed wire types are what the vendored contract artifact generates.
-- `examples/authzen/main.rs` - the same surface as a readable walkthrough: nine steps, four of them refusals, and one showing what a PEP still owes on an ALLOW.
+- `examples/authzen/main.rs` - the same surface as a readable walkthrough: nine steps, four of them refusals or unresolved, and one showing what a PEP still owes on an ALLOW.
 - Platform-side runtime proof: `axonflow-enterprise/runtime-e2e/3603_authzen_evaluation/test.sh`.

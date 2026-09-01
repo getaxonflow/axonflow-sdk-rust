@@ -150,9 +150,15 @@ impl std::error::Error for AuthZenError {}
 /// Everything that can come back instead of a decision.
 ///
 /// The variants are separated by what a caller should DO, not by where the
-/// failure happened: a refusal is fixed by changing the request, an unreadable
-/// profile is fixed by upgrading the SDK, an unusable response is a server
-/// contract violation to report, and a transport failure may simply be retried.
+/// failure happened:
+///
+/// * [`Self::Refused`] - fix the request; the refusal names the member.
+/// * [`Self::Unresolved`] - re-resolve an attribute and build a NEW request.
+/// * [`Self::UnreadableProfile`] - upgrade the SDK.
+/// * [`Self::UnusableResponse`] - a server contract violation to report.
+/// * [`Self::UnusableRequest`] - the envelope could not be encoded; a backstop.
+/// * [`Self::Transport`] - no answer; may simply be retried.
+///
 /// Collapsing them into one opaque error would leave a caller with a string to
 /// match on.
 #[derive(Debug, thiserror::Error)]
@@ -370,8 +376,10 @@ impl AuthZenBulk {
 
 /// Writes `context.args.query`, creating the nested bag if it is not there.
 ///
-/// If `context.args` already holds an UNRESOLVED attribute, the write is
-/// declined and the `Unknown` stays. Overwriting it was the fail-open this
+/// If `context.args` OR `context.args.query` already holds an UNRESOLVED
+/// attribute, the write is declined and the `Unknown` stays. The rule applies
+/// at BOTH levels: guarding only the parent left the defect reachable one level
+/// down, which is where a caller would actually hit it. Overwriting it was the fail-open this
 /// whole module exists to prevent, arriving through its own builder: a caller
 /// that had recorded "nobody could read the request body" and then wrote a
 /// recovered partial query over it would have produced a complete-looking
@@ -380,7 +388,7 @@ impl AuthZenBulk {
 /// refused at `/…/context/args` and never sent.
 fn set_query(context: &mut AttributeMap, query: Attribute<String>) {
     if let Some(args) = context.nested_for_write("args") {
-        args.insert("query", query.map(AttributeValue::from));
+        args.record("query", query.map(AttributeValue::from));
     }
 }
 
@@ -390,7 +398,7 @@ fn set_query(context: &mut AttributeMap, query: Attribute<String>) {
 /// in [`set_query`].
 fn set_correlation(context: &mut AttributeMap, key: &str, value: Attribute<String>) {
     if let Some(correlation) = context.nested_for_write("correlation") {
-        correlation.insert(key, value.map(AttributeValue::from));
+        correlation.record(key, value.map(AttributeValue::from));
     }
 }
 
@@ -676,8 +684,19 @@ impl AxonFlowClient {
             // A refusal is a typed document, so the caller can branch on the
             // code and be pointed at the member to fix. A body that is not one
             // still surfaces as an error - never as a decision.
+            //
+            // A 5xx is only read as a refusal when the code is one this build
+            // KNOWS. An unrecognised code round-trips as `Unknown`, which is
+            // deliberately non-retryable - so an ingress or sidecar answering
+            // 503 with its own JSON error body would otherwise turn a transient
+            // outage into a permanent refusal that a `while err.retryable()`
+            // loop will not retry. A 4xx is still read as a refusal whatever the
+            // code, because "fix the request" is right either way and the
+            // pointer is worth more than the code.
+            let client_error = status.is_client_error();
             if let Ok(refusal) = serde_json::from_slice::<AuthZenError>(&raw) {
-                if !refusal.code.as_str().is_empty() && !refusal.message.is_empty() {
+                let usable = !refusal.code.as_str().is_empty() && !refusal.message.is_empty();
+                if usable && (client_error || refusal.code.is_known()) {
                     return Err(AuthZenEvaluationError::Refused(refusal));
                 }
             }

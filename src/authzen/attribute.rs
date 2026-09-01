@@ -34,17 +34,21 @@
 //! |---------|-------------------------|---------------------------------------------|
 //! | known   | the member, with value  | evaluated                                   |
 //! | absent  | the member is OMITTED   | evaluated, without a fact that has no value |
-//! | unknown | never reaches the wire  | [`AuthZenError`] before the round trip      |
+//! | unknown | never reaches the wire  | refused before the round trip, NOT retryable |
 //!
 //! Absent and "never mentioned" are the same bytes, and that is correct: both
 //! say "there is no such fact". JSON has no way to say "I could not find out",
 //! which is precisely why the type has to carry it - the wire cannot.
 //!
-//! The refusal an unknown attribute produces is `evaluation_unavailable`, which
-//! is the one code in the enumeration that [`AuthZenErrorCode::retryable`]
-//! reports as worth retrying. That is not a coincidence: a source that could
-//! not answer this second may answer the next one, which is exactly the
-//! situation a retry is for.
+//! The refusal an unknown attribute produces is NOT retryable, and that is the
+//! opposite of what it first looks like. A source that could not answer this
+//! second may answer the next one - but that is a statement about a DIFFERENT
+//! request. This one carries the unresolved attribute inside it, so resending
+//! the identical bytes reproduces the identical refusal forever, and a
+//! `while err.retryable()` loop would burn its whole budget on it. Re-resolve
+//! the attribute and build a new request; the SDK reports that with its own
+//! [`super::AuthZenEvaluationError::Unresolved`] rather than through the
+//! server's retryable `evaluation_unavailable`.
 
 use super::types_gen::{AuthZenError, AuthZenErrorCode};
 use serde::de::{MapAccess, Visitor};
@@ -212,8 +216,8 @@ impl AttributeValue {
 }
 
 impl From<serde_json::Value> for AttributeValue {
-    /// Normalises: a JSON object becomes a [`AttributeValue::Nested`] bag whose
-    /// members are all `Known`.
+    /// Normalises: a JSON object becomes a NESTED bag whose members are all
+    /// `Known`.
     ///
     /// Without the normalisation there would be two representations of the same
     /// bytes - `Json(Value::Object)` and `Nested` - and a round trip through
@@ -315,9 +319,42 @@ impl AttributeMap {
         self.0.len()
     }
 
-    /// Records one attribute.
+    /// Records one attribute, REPLACING whatever was there.
+    ///
+    /// This is the map operation, and it behaves like one: a caller writing
+    /// here is making a deliberate replacement. If what it replaces was an
+    /// unresolved attribute, that fact is gone - which is why the request
+    /// builders do not use it. See [`AttributeMap::record`].
     pub fn insert(&mut self, key: impl Into<String>, value: Attribute<AttributeValue>) {
         self.0.insert(key.into(), value);
+    }
+
+    /// Records one attribute, DECLINING to overwrite an unresolved one.
+    ///
+    /// This is the write the request builders use, at every level, and the rule
+    /// is uniform: an `Unknown` at `key` survives, and the new value is not
+    /// written.
+    ///
+    /// The rule has to be uniform because the alternative was measured. An
+    /// earlier version guarded only the PARENT key - so `with_query` refused to
+    /// replace an unresolved `context.args`, and then wrote `query` into it
+    /// unguarded. A caller that recorded "nobody could read the request body"
+    /// and then wrote a recovered partial query produced a complete-looking
+    /// envelope one level down, which is verbatim the scenario the guard was
+    /// added to prevent.
+    ///
+    /// A declined write is not silent: the `Unknown` that survived refuses the
+    /// envelope at its own pointer, carrying the reason the caller gave, so the
+    /// request is never sent and the caller is told which member and why.
+    ///
+    /// Returns whether the value was written, for a caller that wants to know.
+    pub fn record(&mut self, key: impl Into<String>, value: Attribute<AttributeValue>) -> bool {
+        let key = key.into();
+        if matches!(self.0.get(&key), Some(Attribute::Unknown(_))) {
+            return false;
+        }
+        self.0.insert(key, value);
+        true
     }
 
     /// Records a resolved value.
@@ -359,6 +396,11 @@ impl AttributeMap {
     /// An `Absent` or a leaf value IS replaced: both are resolved statements,
     /// they carry no unresolvability to lose, and last-write-wins on a map key
     /// is what a caller expects.
+    ///
+    /// This guards the PARENT only. The leaf write inside the returned bag has
+    /// to go through [`AttributeMap::record`], which applies the same rule -
+    /// guarding one and not the other is how the first version of this fix left
+    /// the defect reachable one level down.
     pub(crate) fn nested_for_write(&mut self, key: &str) -> Option<&mut AttributeMap> {
         match self.0.get(key) {
             Some(Attribute::Unknown(_)) => return None,

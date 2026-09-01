@@ -346,6 +346,60 @@ async fn a_later_write_must_not_erase_an_unresolved_parent() {
 }
 
 #[tokio::test]
+async fn a_later_write_must_not_erase_an_unresolved_leaf() {
+    // The half the first version of this guard missed, and the shape a caller
+    // would actually write: no manual `insert_unknown`, just the builder twice.
+    // The parent guard alone let this through one level down.
+    let (server, seen) = answering(200, allow_body()).await;
+    let request = AuthZenRequest::evaluating(
+        AuthZenSubject::new("gateway", "g1"),
+        AuthZenAction::new("llm.completion"),
+        AuthZenResource::new("llm", "llm"),
+    )
+    .with_query(Attribute::unknown("the request body failed to decode"))
+    .with_query(Attribute::known("a recovered partial prompt"));
+
+    let err = client_for(&server)
+        .evaluate(request)
+        .await
+        .expect_err("the unresolved leaf must survive the second write");
+    match &err {
+        AuthZenEvaluationError::Unresolved { pointer, reason } => {
+            assert_eq!(pointer, "/evaluation/context/args/query");
+            assert!(reason.contains("failed to decode"), "{reason}");
+        }
+        other => panic!("expected an unresolved-attribute error, got {other:?}"),
+    }
+    assert!(
+        seen.lock().expect("not poisoned").is_empty(),
+        "the request was sent with the unresolved leaf overwritten"
+    );
+}
+
+#[tokio::test]
+async fn a_later_correlation_write_must_not_erase_an_unresolved_leaf() {
+    let (server, seen) = answering(200, allow_body()).await;
+    let request = a_request()
+        .with_correlation(
+            "x-session-id",
+            Attribute::unknown("the trace header was unreadable"),
+        )
+        .with_correlation("x-session-id", Attribute::known("sess-1"));
+
+    let err = client_for(&server)
+        .evaluate(request)
+        .await
+        .expect_err("the unresolved leaf must survive the second write");
+    match &err {
+        AuthZenEvaluationError::Unresolved { pointer, .. } => {
+            assert_eq!(pointer, "/evaluation/context/correlation/x-session-id")
+        }
+        other => panic!("expected an unresolved-attribute error, got {other:?}"),
+    }
+    assert!(seen.lock().expect("not poisoned").is_empty());
+}
+
+#[tokio::test]
 async fn a_later_correlation_write_must_not_erase_an_unresolved_parent() {
     let (server, seen) = answering(200, allow_body()).await;
     let mut request = a_request();
@@ -851,6 +905,63 @@ async fn a_dependency_failure_is_the_one_refusal_worth_retrying() {
     .await
     .expect_err("refused");
     assert!(err.retryable());
+}
+
+#[tokio::test]
+async fn a_5xx_carrying_an_unknown_code_stays_a_retryable_transport_failure() {
+    // The regression the leniency fix nearly introduced. An ingress or sidecar
+    // answering 503 with its OWN JSON error body decodes cleanly now that the
+    // refusal type is lenient - and its code round-trips as `Unknown`, which is
+    // non-retryable. Reading it as a refusal would turn a transient outage into
+    // a permanent one that `while err.retryable()` never retries.
+    let err = evaluate_against(
+        503,
+        json!({"code": "upstream_unavailable", "message": "backend down", "trace_id": "t-1"}),
+    )
+    .await
+    .expect_err("must not be a decision");
+    assert!(
+        matches!(err, AuthZenEvaluationError::Transport(_)),
+        "a 5xx with a code this build cannot name is an outage, not a refusal: {err}"
+    );
+    assert!(err.retryable());
+}
+
+#[tokio::test]
+async fn a_5xx_carrying_a_known_code_is_still_a_typed_refusal() {
+    // The other side, so the rule above is not "distrust every 5xx". The
+    // server's own `evaluation_unavailable` is a 502 and must keep its pointer.
+    let err = evaluate_against(
+        502,
+        json!({"code": "evaluation_unavailable", "pointer": "/evaluation", "message": "no answer"}),
+    )
+    .await
+    .expect_err("refused");
+    assert_eq!(
+        err.as_refusal().map(|r| r.code.clone()),
+        Some(AuthZenErrorCode::EvaluationUnavailable)
+    );
+    assert!(err.retryable());
+}
+
+#[tokio::test]
+async fn a_4xx_carrying_an_unknown_code_is_still_a_typed_refusal() {
+    // A 4xx is "fix the request" whatever the code, and the POINTER is worth
+    // more than the code - so a newer server's refusal still reaches the caller
+    // as something it can act on.
+    let err = evaluate_against(
+        422,
+        json!({"code": "unevaluable_realm", "pointer": "/evaluation/subject/realm", "message": "no"}),
+    )
+    .await
+    .expect_err("refused");
+    let refusal = err.as_refusal().expect("typed");
+    assert!(!refusal.code.is_known());
+    assert_eq!(
+        refusal.pointer.as_deref(),
+        Some("/evaluation/subject/realm")
+    );
+    assert!(!err.retryable());
 }
 
 #[tokio::test]

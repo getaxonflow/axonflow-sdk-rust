@@ -24,9 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   would obtain a decision that weighed every attribute except the one nobody
   could read, and report it as complete.
 - Typed refusals. `AuthZenEvaluationError` distinguishes a refusal, an
-  unreadable profile, an unusable response and a transport failure, and its
-  `retryable()` is the whole retryable set in one place; only
-  `evaluation_unavailable` and a transient transport failure are in it.
+  unresolved attribute, an unreadable profile, an unusable response, an
+  unencodable request and a transport failure, and its `retryable()` is the
+  whole retryable set in one place: a SERVER `evaluation_unavailable` and a
+  transient transport failure, and nothing else. A local unresolved attribute is
+  NOT retryable - the refusal is frozen inside the request, so resending it
+  reproduces the identical error; re-resolve and build a new request.
+  A local refusal names the same MEMBER the server would, by JSON Pointer; the
+  CODE may be narrower on the server, which knows the supported set.
 
 ## [0.8.2] - 2026-08-20: five RUSTSEC advisories cleared
 
