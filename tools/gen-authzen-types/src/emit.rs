@@ -27,6 +27,26 @@ use std::fmt::Write as _;
 
 const GENERATOR: &str = "tools/gen-authzen-types";
 
+/// The one type that must NOT reject an unknown member.
+///
+/// Every other generated type carries `deny_unknown_fields`, because an unknown
+/// member in a DECISION is a server speaking a profile this build does not
+/// understand, and reading the rest is acting on a partial interpretation of an
+/// authorization decision.
+///
+/// The refusal document is the opposite case, and getting it wrong costs the
+/// caller the whole diagnostic. It is not a decision - it is the server telling
+/// you which member to fix - and refusing to decode it because the server added
+/// a `retry_after` collapses a typed refusal carrying a code and a JSON Pointer
+/// into an opaque transport error with neither. The Go reference gets this
+/// right by decoding refusals leniently and reserving strictness for the
+/// success path; an earlier version of this emitter did not, and a refusal with
+/// one extra member arrived as `Transport` instead of `Refused`.
+///
+/// Named here rather than inferred, so a reader looking for "why is this one
+/// different" finds the argument next to the exception.
+const LENIENT_REFUSAL_TYPE: &str = "authzen_error";
+
 /// rustfmt's `max_width`.
 ///
 /// The emitter matches rustfmt rather than deferring to it. Shelling out to
@@ -361,7 +381,9 @@ fn emit_type(b: &mut String, t: &Type) -> Result<(), SurfaceError> {
         "#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]"
     };
     let _ = writeln!(b, "{derives}");
-    let _ = writeln!(b, "#[serde(deny_unknown_fields)]");
+    if t.name != LENIENT_REFUSAL_TYPE {
+        let _ = writeln!(b, "#[serde(deny_unknown_fields)]");
+    }
     let _ = writeln!(b, "pub struct {name} {{");
     for (i, f) in t.fields.iter().enumerate() {
         if i > 0 {

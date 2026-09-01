@@ -977,7 +977,6 @@ impl AuthZenEnvelope {
 /// that for a request that was never evaluated would make 'denied' and
 /// 'unevaluable' the same event in every audit and every client branch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AuthZenError {
     pub code: AuthZenErrorCode,
 

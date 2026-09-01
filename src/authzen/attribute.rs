@@ -141,20 +141,74 @@ impl<T> Attribute<T> {
     }
 }
 
-/// A leaf value, or a nested bag.
-///
 /// Nesting is not decoration: `context.args.query` and
 /// `context.correlation.x-session-id` are LEAVES two levels down, and the
 /// refusal for an unresolvable one has to name the leaf. A flat bag whose
 /// values were opaque JSON would report `/evaluation/context/correlation` for a
 /// single unresolvable session id, which tells an operator to go looking
 /// through an object rather than at a member.
+///
+/// A leaf value, or a nested bag.
+///
+/// The two cases are NOT public variants, and that is deliberate. The
+/// normalisation below holds only if nobody can construct the un-normalised
+/// form: with a public `Json(serde_json::Value)` variant a caller could write
+/// `AttributeValue::Json(json!({"a": 1}))`, which serialises to the same bytes
+/// as the nested form but compares unequal to it - and which
+/// [`AttributeMap::validate`] would walk straight past, because an opaque JSON
+/// object is not a bag it knows how to descend into. Construct with `From`, read
+/// with [`AttributeValue::fold`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum AttributeValue {
-    /// A scalar or array. Never an object - see [`AttributeValue::from`].
+pub struct AttributeValue(AttributeValueInner);
+
+#[derive(Clone, Debug, PartialEq)]
+enum AttributeValueInner {
     Json(serde_json::Value),
-    /// A nested bag, whose own members each carry the three states.
     Nested(AttributeMap),
+}
+
+impl AttributeValue {
+    /// Reads whichever case this is.
+    ///
+    /// The only way to look inside. A caller that wants "the nested bag, if it
+    /// is one" has [`AttributeValue::as_nested`]; everything else goes through
+    /// here, so a third case added later becomes a compile error rather than a
+    /// silently unhandled shape.
+    pub fn fold<R>(
+        &self,
+        on_json: impl FnOnce(&serde_json::Value) -> R,
+        on_nested: impl FnOnce(&AttributeMap) -> R,
+    ) -> R {
+        match &self.0 {
+            AttributeValueInner::Json(v) => on_json(v),
+            AttributeValueInner::Nested(m) => on_nested(m),
+        }
+    }
+
+    /// The nested bag, when this is one.
+    pub fn as_nested(&self) -> Option<&AttributeMap> {
+        match &self.0 {
+            AttributeValueInner::Nested(m) => Some(m),
+            AttributeValueInner::Json(_) => None,
+        }
+    }
+
+    /// The leaf JSON, when this is one. Never an object.
+    pub fn as_json(&self) -> Option<&serde_json::Value> {
+        match &self.0 {
+            AttributeValueInner::Json(v) => Some(v),
+            AttributeValueInner::Nested(_) => None,
+        }
+    }
+
+    /// The nested bag, mutably. Crate-internal: the request builders write
+    /// leaves through it, and nothing outside needs to reach in.
+    pub(crate) fn as_nested_mut(&mut self) -> Option<&mut AttributeMap> {
+        match &mut self.0 {
+            AttributeValueInner::Nested(m) => Some(m),
+            AttributeValueInner::Json(_) => None,
+        }
+    }
 }
 
 impl From<serde_json::Value> for AttributeValue {
@@ -168,51 +222,57 @@ impl From<serde_json::Value> for AttributeValue {
     /// wire.
     fn from(v: serde_json::Value) -> Self {
         match v {
-            serde_json::Value::Object(map) => AttributeValue::Nested(AttributeMap(
-                map.into_iter()
-                    .map(|(k, v)| (k, Attribute::Known(AttributeValue::from(v))))
-                    .collect(),
-            )),
-            other => AttributeValue::Json(other),
+            serde_json::Value::Object(map) => {
+                AttributeValue(AttributeValueInner::Nested(AttributeMap(
+                    map.into_iter()
+                        .map(|(k, v)| (k, Attribute::Known(AttributeValue::from(v))))
+                        .collect(),
+                )))
+            }
+            other => AttributeValue(AttributeValueInner::Json(other)),
         }
     }
 }
 
 impl From<&str> for AttributeValue {
     fn from(v: &str) -> Self {
-        AttributeValue::Json(serde_json::Value::String(v.to_string()))
+        AttributeValue(AttributeValueInner::Json(serde_json::Value::String(
+            v.to_string(),
+        )))
     }
 }
 
 impl From<String> for AttributeValue {
     fn from(v: String) -> Self {
-        AttributeValue::Json(serde_json::Value::String(v))
+        AttributeValue(AttributeValueInner::Json(serde_json::Value::String(v)))
     }
 }
 
 impl From<bool> for AttributeValue {
     fn from(v: bool) -> Self {
-        AttributeValue::Json(serde_json::Value::Bool(v))
+        AttributeValue(AttributeValueInner::Json(serde_json::Value::Bool(v)))
     }
 }
 
 impl From<i64> for AttributeValue {
     fn from(v: i64) -> Self {
-        AttributeValue::Json(serde_json::Value::Number(v.into()))
+        AttributeValue(AttributeValueInner::Json(serde_json::Value::Number(
+            v.into(),
+        )))
     }
 }
 
 impl From<AttributeMap> for AttributeValue {
     fn from(v: AttributeMap) -> Self {
-        AttributeValue::Nested(v)
+        AttributeValue(AttributeValueInner::Nested(v))
     }
 }
 
 impl Serialize for AttributeValue {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        match self {
-            AttributeValue::Json(v) => v.serialize(s),
-            AttributeValue::Nested(m) => m.serialize(s),
+        match &self.0 {
+            AttributeValueInner::Json(v) => v.serialize(s),
+            AttributeValueInner::Nested(m) => m.serialize(s),
         }
     }
 }
@@ -285,6 +345,34 @@ impl AttributeMap {
         self.0.iter()
     }
 
+    /// The nested bag at `key`, ready to be written into - unless writing there
+    /// would ERASE an unresolved attribute.
+    ///
+    /// Returns `None` when the key already holds an `Unknown`. That is the one
+    /// state a later write must not overwrite: the caller has already said
+    /// nobody could resolve this member, and quietly replacing it with a fresh
+    /// bag would produce a complete-looking request whose missing fact nothing
+    /// records. Declining the write leaves the `Unknown` in place, so
+    /// [`AttributeMap::validate`] refuses the envelope at that member and the
+    /// request is never sent.
+    ///
+    /// An `Absent` or a leaf value IS replaced: both are resolved statements,
+    /// they carry no unresolvability to lose, and last-write-wins on a map key
+    /// is what a caller expects.
+    pub(crate) fn nested_for_write(&mut self, key: &str) -> Option<&mut AttributeMap> {
+        match self.0.get(key) {
+            Some(Attribute::Unknown(_)) => return None,
+            Some(Attribute::Known(value)) if value.as_nested().is_some() => {}
+            _ => {
+                self.insert_known(key, AttributeMap::new());
+            }
+        }
+        match self.0.get_mut(key) {
+            Some(Attribute::Known(value)) => value.as_nested_mut(),
+            _ => None,
+        }
+    }
+
     /// Refuses a bag holding an attribute nobody could resolve.
     ///
     /// `at` is the JSON Pointer this bag sits at, so the refusal names the
@@ -312,8 +400,12 @@ impl AttributeMap {
                     )
                     .at(&pointer));
                 }
-                Attribute::Known(AttributeValue::Nested(nested)) => nested.validate(&pointer)?,
-                Attribute::Known(AttributeValue::Json(_)) | Attribute::Absent => {}
+                Attribute::Known(value) => {
+                    if let Some(nested) = value.as_nested() {
+                        nested.validate(&pointer)?;
+                    }
+                }
+                Attribute::Absent => {}
             }
         }
         Ok(())

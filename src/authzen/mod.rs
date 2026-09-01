@@ -29,6 +29,17 @@
 //! [`attribute`], which is the module to read before writing any code that
 //! fills in a `properties` bag or a correlation key.
 //!
+//! # Local and remote refusals name the same MEMBER
+//!
+//! The SDK validates before sending, and a local refusal carries the JSON
+//! Pointer the server would have sent for the same bytes. The CODE may be
+//! narrower on the server side: this client knows only that a required member
+//! is missing and says `incomplete_evaluation`, while the server additionally
+//! knows which values it can evaluate and narrows the same condition to
+//! `unsupported_subject` with a `supported` list. Branch on the pointer for
+//! "which member"; read the code as the server's more specific reading when
+//! there is one.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -99,8 +110,17 @@ impl AuthZenError {
     /// `"unsupported_action"` without the offending member is a puzzle rather
     /// than a diagnosis, which is why the server never sends one without a
     /// pointer and neither does this SDK.
+    ///
+    /// An EMPTY pointer is dropped rather than sent. The root has no member to
+    /// name, and `"pointer": ""` renders as `... at : ...` and reads to a caller
+    /// as a member whose name is the empty string. The server sends no pointer
+    /// at all for a refusal about the request as a whole, and neither does this.
     pub fn at(mut self, pointer: &str) -> Self {
-        self.pointer = Some(pointer.to_string());
+        self.pointer = if pointer.is_empty() {
+            None
+        } else {
+            Some(pointer.to_string())
+        };
         self
     }
 
@@ -138,8 +158,18 @@ impl std::error::Error for AuthZenError {}
 #[derive(Debug, thiserror::Error)]
 pub enum AuthZenEvaluationError {
     /// The request was refused rather than evaluated - by the server, or by
-    /// this client before the round trip. Both speak the same code and pointer
-    /// vocabulary, so a caller branches on one thing rather than two.
+    /// this client before the round trip.
+    ///
+    /// Both name the SAME MEMBER: a local refusal carries the JSON Pointer the
+    /// server would have sent for the same bytes, verified against a live
+    /// server by `runtime-e2e/authzen_evaluation`.
+    ///
+    /// The CODE may be narrower on the server side, and that is not a defect in
+    /// either. This client knows only that a required member is missing, and
+    /// says `incomplete_evaluation`; the server additionally knows which values
+    /// it can evaluate, and narrows the same condition to `unsupported_subject`
+    /// with a `supported` list. Branch on the pointer for "which member", and
+    /// treat the code as the server's more specific reading when there is one.
     #[error("{0}")]
     Refused(#[from] AuthZenError),
 
@@ -172,8 +202,53 @@ pub enum AuthZenEvaluationError {
         detail: String,
     },
 
+    /// The request could not be SENT as built: it carries an attribute the
+    /// caller could not resolve.
+    ///
+    /// Separate from [`Self::Refused`], and NOT retryable, because the two need
+    /// opposite actions from the caller. A server `evaluation_unavailable` says
+    /// "send these bytes again"; this says "re-resolve the attribute and build a
+    /// NEW request". Reporting it as retryable - which an earlier version of
+    /// this SDK did - sends a `while err.retryable()` loop against a request
+    /// whose refusal is frozen inside it, so every attempt produces the
+    /// identical error until the budget runs out.
+    ///
+    /// The OPERATION may well succeed once the attribute resolves. That is a
+    /// statement about a different request, and it is why this carries the
+    /// pointer and the reason rather than a boolean.
+    #[error(
+        "this request cannot be sent as built. At {pointer}: {reason} Re-resolve the attribute and \
+         build a NEW request; resending this one cannot succeed."
+    )]
+    Unresolved {
+        /// The JSON Pointer naming the member nobody could resolve.
+        pointer: String,
+        /// The refusal message, which carries the reason the caller gave.
+        reason: String,
+    },
+
+    /// The envelope could not be encoded.
+    ///
+    /// A backstop, not an ordinary outcome: the only way to reach it is to
+    /// bypass validation and hand the encoder an unresolved attribute. It is
+    /// distinct from [`Self::UnusableResponse`] because that one names a SERVER
+    /// contract violation to report, and an operator handed one label for both
+    /// cannot tell "the platform is emitting a body I must file a bug about"
+    /// from "my own request was not built correctly".
+    #[error("the request could not be encoded: {detail}")]
+    UnusableRequest {
+        /// What about the envelope could not be encoded.
+        detail: String,
+    },
+
     /// The request never got an answer: connection, timeout, credentials, or a
     /// non-refusal error status.
+    ///
+    /// This surface does NOT apply the client's [`crate::RetryConfig`]: that
+    /// executor is wired to the proxy path's request type, and retrying an
+    /// authorization decision on the caller's behalf is a policy decision this
+    /// SDK does not make for them. Retry is the caller's, guided by
+    /// [`AuthZenEvaluationError::retryable`].
     #[error("the evaluation request failed: {0}")]
     Transport(#[from] AxonFlowError),
 }
@@ -187,13 +262,20 @@ impl AuthZenEvaluationError {
     /// * a refusal - only when its code is `evaluation_unavailable`;
     /// * a transport failure - timeout, connect, `5xx`, `429`;
     /// * an unreadable profile - never;
-    /// * an unusable response - never.
+    /// * an unusable response - never;
+    /// * an unresolved attribute - NEVER, because the refusal is frozen inside
+    ///   the request. The OPERATION may succeed once the attribute resolves,
+    ///   but that is a different request, and this method answers only about
+    ///   this one.
+    /// * an unencodable request - never.
     pub fn retryable(&self) -> bool {
         match self {
             AuthZenEvaluationError::Refused(e) => e.retryable(),
             AuthZenEvaluationError::Transport(e) => e.is_retryable(),
             AuthZenEvaluationError::UnreadableProfile { .. }
-            | AuthZenEvaluationError::UnusableResponse { .. } => false,
+            | AuthZenEvaluationError::UnusableResponse { .. }
+            | AuthZenEvaluationError::Unresolved { .. }
+            | AuthZenEvaluationError::UnusableRequest { .. } => false,
         }
     }
 
@@ -287,23 +369,29 @@ impl AuthZenBulk {
 }
 
 /// Writes `context.args.query`, creating the nested bag if it is not there.
+///
+/// If `context.args` already holds an UNRESOLVED attribute, the write is
+/// declined and the `Unknown` stays. Overwriting it was the fail-open this
+/// whole module exists to prevent, arriving through its own builder: a caller
+/// that had recorded "nobody could read the request body" and then wrote a
+/// recovered partial query over it would have produced a complete-looking
+/// envelope, passed `validate`, and been handed a verdict that named every
+/// attribute it weighed. Leaving the `Unknown` in place means the envelope is
+/// refused at `/…/context/args` and never sent.
 fn set_query(context: &mut AttributeMap, query: Attribute<String>) {
-    let mut args = match context.get("args") {
-        Some(Attribute::Known(AttributeValue::Nested(existing))) => existing.clone(),
-        _ => AttributeMap::new(),
-    };
-    args.insert("query", query.map(AttributeValue::from));
-    context.insert_known("args", args);
+    if let Some(args) = context.nested_for_write("args") {
+        args.insert("query", query.map(AttributeValue::from));
+    }
 }
 
 /// Writes one `context.correlation.<key>`, creating the nested bag if needed.
+///
+/// Declines the write over an unresolved `context.correlation`, for the reason
+/// in [`set_query`].
 fn set_correlation(context: &mut AttributeMap, key: &str, value: Attribute<String>) {
-    let mut correlation = match context.get("correlation") {
-        Some(Attribute::Known(AttributeValue::Nested(existing))) => existing.clone(),
-        _ => AttributeMap::new(),
-    };
-    correlation.insert(key, value.map(AttributeValue::from));
-    context.insert_known("correlation", correlation);
+    if let Some(correlation) = context.nested_for_write("correlation") {
+        correlation.insert(key, value.map(AttributeValue::from));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +465,16 @@ impl AuthZenDecision {
         self.context.obligations.iter().filter(|o| o.mandatory)
     }
 
-    /// The approval challenge, when the state is `CHALLENGE`.
+    /// The approval challenge the contract declares for a `CHALLENGE` state.
+    ///
+    /// NO DEPLOYED SERVER POPULATES THIS TODAY. The v10 route is an adapter over
+    /// the legacy evaluation, and its handler builds the response context
+    /// without an `approval` member - so a `CHALLENGE` arrives with this empty,
+    /// and a caller that writes `decision.approval().unwrap()` panics on its
+    /// first real challenge. It is surfaced because the contract declares it and
+    /// the ADR-065 Policy Decision Point fills it at v11; until then, treat an
+    /// empty approval on a CHALLENGE as the normal case and read
+    /// [`AuthZenDecision::state`] and [`AuthZenDecision::category`] instead.
     pub fn approval(&self) -> Option<&AuthZenApprovalRequirement> {
         self.context.approval.as_ref()
     }
@@ -480,6 +577,24 @@ impl AuthZenDecision {
     }
 }
 
+/// Maps a LOCAL validation refusal onto the outcome the caller needs.
+///
+/// The one code that has to be re-read on this side is `evaluation_unavailable`.
+/// From the server it means "the evaluator could not be reached; send these
+/// bytes again". Produced locally it means "an attribute in this request was
+/// never resolved", and resending the identical request reproduces the identical
+/// refusal forever. Same code, opposite action, so they must not arrive as the
+/// same thing.
+fn local_refusal(refusal: AuthZenError) -> AuthZenEvaluationError {
+    if refusal.code == AuthZenErrorCode::EvaluationUnavailable {
+        return AuthZenEvaluationError::Unresolved {
+            pointer: refusal.pointer.clone().unwrap_or_default(),
+            reason: refusal.message.clone(),
+        };
+    }
+    AuthZenEvaluationError::Refused(refusal)
+}
+
 // ---------------------------------------------------------------------------
 // The client surface
 // ---------------------------------------------------------------------------
@@ -537,13 +652,14 @@ impl AxonFlowClient {
         // For ONE class it is not a convenience but the whole point: an
         // attribute the caller could not resolve has no wire representation, so
         // the server can never refuse it. Only this check can.
-        envelope.validate("")?;
+        if let Err(refusal) = envelope.validate("") {
+            return Err(local_refusal(refusal));
+        }
 
-        let body = serde_json::to_vec(&envelope).map_err(|e| {
-            AuthZenEvaluationError::UnusableResponse {
-                detail: format!("the envelope could not be encoded: {e}"),
-            }
-        })?;
+        let body =
+            serde_json::to_vec(&envelope).map_err(|e| AuthZenEvaluationError::UnusableRequest {
+                detail: e.to_string(),
+            })?;
 
         let url = format!("{}{}", self.endpoint(), AUTHZEN_PATH);
         let response = self

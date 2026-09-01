@@ -148,21 +148,23 @@ async fn an_unknown_attribute_refuses_the_request_before_it_is_sent() {
         .await
         .expect_err("an unresolvable attribute must not be evaluated around");
 
-    let refusal = err.as_refusal().expect("a typed refusal");
-    assert_eq!(refusal.code, AuthZenErrorCode::EvaluationUnavailable);
-    assert_eq!(
-        refusal.pointer.as_deref(),
-        Some("/evaluation/subject/properties/department")
-    );
-    assert!(
-        refusal.message.contains("the directory timed out"),
-        "the reason the source gave must reach the operator: {}",
-        refusal.message
-    );
-    assert!(
-        err.retryable(),
-        "a source that could not answer may answer next time"
-    );
+    match &err {
+        AuthZenEvaluationError::Unresolved { pointer, reason } => {
+            assert_eq!(pointer, "/evaluation/subject/properties/department");
+            assert!(
+                reason.contains("the directory timed out"),
+                "the reason the source gave must reach the operator: {reason}"
+            );
+        }
+        other => panic!("expected an unresolved-attribute error, got {other:?}"),
+    }
+    // NOT retryable, and the distinction is the point. `retryable()` answers
+    // "could sending THIS request again produce a different answer", and the
+    // refusal is frozen inside the request: every resend reproduces it. The
+    // operation may succeed once the attribute resolves, which is a different
+    // request. An earlier version of this SDK reported it retryable and would
+    // have sent a `while err.retryable()` loop through its whole budget.
+    assert!(!err.retryable());
     assert!(
         seen.lock().expect("not poisoned").is_empty(),
         "the request reached the server despite carrying an unresolvable attribute"
@@ -215,19 +217,17 @@ async fn absent_and_unknown_are_not_the_same_outcome() {
     // before the round trip, and `AttributeMap`'s `Serialize` refuses to encode
     // it at all - and a test that only asked `is_err()` PASSED with the first
     // one removed, because the second one caught the mutant and produced a
-    // different, wronger error. Naming the code, the pointer and the
-    // retryability is what distinguishes "the validator refused this" from
-    // "the encoder blew up on the way out".
+    // different, wronger error. Naming the variant and the pointer is what
+    // distinguishes "the validator refused this" from "the encoder blew up on
+    // the way out".
     let err = unknown_outcome.expect_err("an unknown attribute must NOT produce a decision");
-    let refusal = err
-        .as_refusal()
-        .unwrap_or_else(|| panic!("expected a typed refusal, got {err}"));
-    assert_eq!(refusal.code, AuthZenErrorCode::EvaluationUnavailable);
-    assert_eq!(
-        refusal.pointer.as_deref(),
-        Some("/evaluation/subject/properties/department")
-    );
-    assert!(err.retryable());
+    match &err {
+        AuthZenEvaluationError::Unresolved { pointer, .. } => {
+            assert_eq!(pointer, "/evaluation/subject/properties/department")
+        }
+        other => panic!("expected an unresolved-attribute error, got {other:?}"),
+    }
+    assert!(!err.retryable());
 }
 
 #[tokio::test]
@@ -269,10 +269,12 @@ async fn an_unresolvable_nested_leaf_is_named_by_the_leaf_not_the_bag() {
         .await
         .expect_err("refused");
 
-    assert_eq!(
-        err.as_refusal().and_then(|r| r.pointer.as_deref()),
-        Some("/evaluation/context/correlation/x-session-id")
-    );
+    match &err {
+        AuthZenEvaluationError::Unresolved { pointer, .. } => {
+            assert_eq!(pointer, "/evaluation/context/correlation/x-session-id")
+        }
+        other => panic!("expected an unresolved-attribute error, got {other:?}"),
+    }
 }
 
 #[test]
@@ -294,11 +296,105 @@ fn a_json_object_normalises_into_a_nested_bag_so_equality_survives_a_round_trip(
     inner.insert_known("b", 1i64);
     let mut outer = AttributeMap::new();
     outer.insert_known("a", inner);
-    assert_eq!(from_json, AttributeValue::Nested(outer));
+    assert_eq!(from_json, AttributeValue::from(outer));
+    // The invariant that makes the equality above meaningful: there is no OTHER
+    // way to hold a JSON object. `AttributeValue`'s cases are not public
+    // variants, so `AttributeValue::Json(json!({...}))` does not compile, and a
+    // bag cannot hide an object the validator would walk straight past.
+    assert!(from_json.as_json().is_none());
+    assert!(from_json.as_nested().is_some());
 
     let encoded = serde_json::to_value(&from_json).expect("encodes");
     let decoded: AttributeValue = serde_json::from_value(encoded).expect("decodes");
     assert_eq!(from_json, decoded);
+}
+
+#[tokio::test]
+async fn a_later_write_must_not_erase_an_unresolved_parent() {
+    // The fail-open this module exists to prevent, arriving through its own
+    // builder. A gateway whose body decode failed records that `args` is
+    // unresolvable, then recovers a partial prompt and writes it. If the write
+    // replaced the bag, the envelope would validate, go on the wire complete,
+    // and the caller would be handed a verdict naming every attribute it
+    // weighed - including the one nobody could read.
+    let (server, seen) = answering(200, allow_body()).await;
+    let mut request = AuthZenRequest::evaluating(
+        AuthZenSubject::new("gateway", "g1"),
+        AuthZenAction::new("llm.completion"),
+        AuthZenResource::new("llm", "llm"),
+    );
+    request
+        .context
+        .insert_unknown("args", "the request body failed to decode");
+    let request = request.with_query(Attribute::known("a partial prompt"));
+
+    let err = client_for(&server)
+        .evaluate(request)
+        .await
+        .expect_err("the unresolved parent must survive the write");
+    match &err {
+        AuthZenEvaluationError::Unresolved { pointer, reason } => {
+            assert_eq!(pointer, "/evaluation/context/args");
+            assert!(reason.contains("failed to decode"), "{reason}");
+        }
+        other => panic!("expected an unresolved-attribute error, got {other:?}"),
+    }
+    assert!(
+        seen.lock().expect("not poisoned").is_empty(),
+        "the request was sent with the unresolved member erased"
+    );
+}
+
+#[tokio::test]
+async fn a_later_correlation_write_must_not_erase_an_unresolved_parent() {
+    let (server, seen) = answering(200, allow_body()).await;
+    let mut request = a_request();
+    request
+        .context
+        .insert_unknown("correlation", "the trace propagator was unreadable");
+    let request = request.with_correlation("x-session-id", Attribute::known("sess-1"));
+
+    let err = client_for(&server)
+        .evaluate(request)
+        .await
+        .expect_err("the unresolved parent must survive the write");
+    assert!(matches!(err, AuthZenEvaluationError::Unresolved { .. }));
+    assert!(seen.lock().expect("not poisoned").is_empty());
+}
+
+#[tokio::test]
+async fn a_later_write_does_replace_a_resolved_parent() {
+    // The other side of the rule, so the guard above cannot be "never write".
+    // `Absent` and a leaf are resolved statements carrying no unresolvability
+    // to lose, and last-write-wins on a map key is what a caller expects.
+    let (server, seen) = answering(200, allow_body()).await;
+    let mut request = a_request();
+    request.context.insert_absent("correlation");
+    let request = request.with_correlation("x-session-id", Attribute::known("sess-1"));
+
+    client_for(&server)
+        .evaluate(request)
+        .await
+        .expect("a resolved parent is replaced, not preserved");
+    assert_eq!(
+        sent_body(&seen)["evaluation"]["context"]["correlation"],
+        json!({"x-session-id": "sess-1"})
+    );
+}
+
+#[test]
+fn a_refusal_about_the_whole_request_carries_no_pointer() {
+    // `"pointer": ""` renders as `... at : ...` and reads as a member whose
+    // name is the empty string. The server sends no pointer at all for a
+    // refusal about the request as a whole.
+    let err = AuthZenEnvelope {
+        evaluation: None,
+        evaluations: None,
+    }
+    .validate("")
+    .expect_err("refused");
+    assert_eq!(err.pointer, None);
+    assert!(!err.to_string().contains(" at :"), "{err}");
 }
 
 #[test]
@@ -704,6 +800,46 @@ async fn a_typed_refusal_reaches_the_caller_with_its_code_and_pointer() {
     );
     assert_eq!(refusal.supported, vec!["args", "correlation"]);
     assert!(!err.retryable());
+}
+
+#[tokio::test]
+async fn a_refusal_carrying_a_member_this_build_does_not_know_is_still_a_refusal() {
+    // Strictness belongs on the DECISION, not on the diagnostic. Refusing to
+    // decode a refusal because the server added a member collapses a typed
+    // error carrying a code and a JSON Pointer into an opaque transport
+    // failure with neither - the caller loses the one thing the refusal was
+    // for. An earlier version of this SDK did exactly that.
+    let err = evaluate_against(
+        422,
+        json!({
+            "code": "unsupported_action",
+            "pointer": "/evaluation/action/name",
+            "message": "not an evaluable action",
+            "retry_after": 5
+        }),
+    )
+    .await
+    .expect_err("refused");
+
+    let refusal = err
+        .as_refusal()
+        .unwrap_or_else(|| panic!("the extra member cost the caller the whole diagnostic: {err}"));
+    assert_eq!(refusal.code, AuthZenErrorCode::UnsupportedAction);
+    assert_eq!(refusal.pointer.as_deref(), Some("/evaluation/action/name"));
+}
+
+#[tokio::test]
+async fn a_decision_carrying_a_member_this_build_does_not_know_is_still_refused() {
+    // The other half of the same rule, so the leniency above cannot spread: a
+    // DECISION with an unknown member is a server speaking a profile this build
+    // cannot read, and acting on the part that parsed is the fail-open.
+    let mut body = allow_body();
+    body["quarantine_until"] = json!("2099-01-01");
+    let err = evaluate_against(200, body).await.expect_err("refused");
+    assert!(matches!(
+        err,
+        AuthZenEvaluationError::UnusableResponse { .. }
+    ));
 }
 
 #[tokio::test]

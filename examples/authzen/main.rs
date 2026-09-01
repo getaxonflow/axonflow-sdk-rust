@@ -15,7 +15,9 @@
 //! `if decision.allowed()` and nothing else, and the first refusal they meet in
 //! production is a string in a log.
 //!
-//! Steps 4 to 8 are refusals. Each one is an outcome a real gateway hits.
+//! Steps 5 to 8 are refusals - four of the nine. Each one is an outcome a real
+//! gateway hits. Step 9 is the check a Policy Enforcement Point owes on the
+//! ALLOW path, which is the one people forget.
 
 use axonflow_sdk_rust::authzen::{
     Attribute, AuthZenAction, AuthZenBulk, AuthZenDecision, AuthZenErrorCode,
@@ -23,7 +25,7 @@ use axonflow_sdk_rust::authzen::{
 };
 use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig};
 
-const STEPS: usize = 8;
+const STEPS: usize = 9;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -135,8 +137,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The same member, one state over. The directory timed out, so nobody knows
     // whether there is a department. Sending the request without it would
     // obtain a decision that weighed every attribute except that one - and
-    // report it as complete. The SDK refuses before the round trip, and the
-    // refusal is the one code worth retrying.
+    // report it as complete. The SDK refuses before the round trip.
+    //
+    // It is NOT reported as retryable, and the difference matters: the refusal
+    // is frozen inside this request, so resending it reproduces the identical
+    // error. Re-resolve the attribute and build a NEW request.
     let mut subject = AuthZenSubject::new("gateway", "llm-gateway-01");
     subject
         .properties
@@ -151,12 +156,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_query(Attribute::known("summarise the incident report")),
         )
         .await;
-    expect_refusal(
+    expect_unresolved(
         outcome,
         "5. an unresolvable attribute",
-        AuthZenErrorCode::EvaluationUnavailable,
-        Some("/evaluation/subject/properties/department"),
-        true,
+        "/evaluation/subject/properties/department",
     )?;
     done += 1;
 
@@ -237,13 +240,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     done += 1;
 
-    // A run whose steps stopped executing prints no failure and exits 0, which
-    // is indistinguishable from success.
+    // --- 9. What a PEP still owes on an ALLOW ----------------------------
+    //
+    // `allowed()` is necessary and not sufficient. A mandatory obligation the
+    // enforcement point cannot discharge means the operation must NOT proceed,
+    // and the number of integrations that stop at `if allowed` is the reason
+    // this step is here rather than in a doc comment.
+    let decision = client
+        .evaluate(
+            AuthZenRequest::evaluating(gateway(), llm_completion(), llm_resource())
+                .with_query(Attribute::known("what is our refund policy?")),
+        )
+        .await?;
+    let mandatory: Vec<&str> = decision
+        .mandatory_obligations()
+        .map(|o| o.source_policy.as_str())
+        .collect();
+    if decision.allowed() && !mandatory.is_empty() {
+        // The branch a real PEP writes: discharge every one, or block.
+        println!(
+            "9. allow with {} mandatory obligation(s): {mandatory:?}",
+            mandatory.len()
+        );
+    } else {
+        println!(
+            "9. allow with no mandatory obligations (state={}, obligations={})",
+            decision.state(),
+            decision.obligations().len()
+        );
+    }
+    done += 1;
+
+    // Catches a step that returned early with a value rather than an error. It
+    // does NOT catch a step deleted from this function - nothing can, short of
+    // naming them - so it is a floor, not a census.
     if done != STEPS {
         return Err(format!("only {done} of {STEPS} steps ran").into());
     }
     println!("\n{done}/{STEPS} steps OK");
     Ok(())
+}
+
+fn gateway() -> AuthZenSubject {
+    AuthZenSubject::new("gateway", "llm-gateway-01")
+}
+
+fn llm_completion() -> AuthZenAction {
+    AuthZenAction::new("llm.completion")
+}
+
+fn llm_resource() -> AuthZenResource {
+    AuthZenResource::new("llm", "llm")
 }
 
 fn describe(decision: &AuthZenDecision) {
@@ -275,6 +322,33 @@ fn expect_allowed(
     }
     println!("{step}: allowed={}", decision.allowed());
     Ok(())
+}
+
+fn expect_unresolved(
+    outcome: Result<AuthZenDecision, AuthZenEvaluationError>,
+    step: &str,
+    pointer: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match outcome {
+        Ok(d) => Err(format!(
+            "{step}: expected a refusal, got a decision (allowed={})",
+            d.allowed()
+        )
+        .into()),
+        Err(AuthZenEvaluationError::Unresolved {
+            pointer: got,
+            reason,
+        }) => {
+            if got != pointer {
+                return Err(format!("{step}: expected pointer {pointer:?}, got {got:?}").into());
+            }
+            println!("{step}: unresolved at {got} (retryable=false) - {reason}");
+            Ok(())
+        }
+        Err(other) => {
+            Err(format!("{step}: expected an unresolved-attribute error, got {other}").into())
+        }
+    }
 }
 
 fn expect_refusal(

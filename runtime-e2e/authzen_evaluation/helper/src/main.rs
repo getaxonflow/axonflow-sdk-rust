@@ -9,11 +9,19 @@
 //      assert that the two surfaces agree about a real policy decision, in both
 //      the allow and the deny direction.
 //
-//   2. THE REFUSAL VOCABULARY IS SHARED. The SDK refuses an incomplete subject
+//   2. BOTH SIDES NAME THE SAME MEMBER. The SDK refuses an incomplete subject
 //      locally and the server refuses the same bytes on the wire. A unit test
 //      can pin the local half; only a live server can establish that the two
-//      name the SAME member. If they diverge, a caller is reading two different
-//      diagnostics for one mistake and cannot tell which side produced it.
+//      name the SAME member.
+//
+//      The CODE is asserted too, but not for equality - because they are not
+//      equal, and that is not a defect. This client knows only that a required
+//      member is missing (`incomplete_evaluation`); the server additionally
+//      knows which values it can evaluate and narrows the same condition to
+//      `unsupported_subject` with a `supported` list. What IS asserted is that
+//      the server's code is one this build knows: a code outside the closed
+//      enumeration means the contract moved and this SDK cannot read the
+//      refusal, which no unit test can discover.
 //
 //   3. THE BARE-BOOLEAN CASE IS REAL. The SDK refuses a 200 that carries no
 //      profile payload. That guard is only worth anything if a server can
@@ -21,9 +29,10 @@
 //      and asserts the response has no `context`.
 //
 //   4. AN UNRESOLVABLE ATTRIBUTE NEVER REACHES THE NETWORK. Asserted by
-//      pointing the real client at a port nothing is listening on: a typed
-//      refusal from that client is proof the check ran before any I/O, which no
-//      amount of stubbing can establish.
+//      pointing the real client at a port nothing is listening on: an
+//      `Unresolved` error from that client is proof the check ran before any
+//      I/O, which no amount of stubbing can establish. A transport error there
+//      would mean the envelope had already been handed to the network.
 //
 // Prints one line per assertion. EXPECTED_ASSERTIONS must equal the number
 // that ran: a suite whose checks stop executing prints no failures and exits 0,
@@ -37,7 +46,7 @@ use axonflow_sdk_rust::authzen::{
 use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig};
 use base64::Engine as _;
 
-const EXPECTED_ASSERTIONS: usize = 12;
+const EXPECTED_ASSERTIONS: usize = 13;
 
 /// A query the default community policy set permits.
 const ALLOWED_QUERY: &str = "what is our refund policy?";
@@ -45,20 +54,25 @@ const ALLOWED_QUERY: &str = "what is our refund policy?";
 const DENIED_QUERY: &str = "'; DROP TABLE users; --";
 
 struct Run {
-    passed: usize,
+    /// How many assertions actually EXECUTED. Compared against `expected` at the
+    /// end - a suite whose checks stop running prints no failures and exits 0,
+    /// which is indistinguishable from success.
+    ran: usize,
+    /// How many of those FAILED, tracked separately so a run cannot report a
+    /// full floor while every assertion inside it was red.
+    failed: usize,
     expected: usize,
-    failed: bool,
 }
 
 impl Run {
     fn pass(&mut self, what: &str) {
-        self.passed += 1;
+        self.ran += 1;
         println!("  PASS: {what}");
     }
 
     fn fail(&mut self, what: &str, detail: String) {
-        self.passed += 1;
-        self.failed = true;
+        self.ran += 1;
+        self.failed += 1;
         println!("  FAIL: {what} — {detail}");
     }
 
@@ -107,9 +121,9 @@ async fn main() {
     };
 
     let mut run = Run {
-        passed: 0,
+        ran: 0,
+        failed: 0,
         expected: EXPECTED_ASSERTIONS,
-        failed: false,
     };
 
     // --- 1 / 2: a decision in both directions, through the SDK ------------
@@ -258,12 +272,19 @@ async fn main() {
                 .await;
             run.check(
                 "an UNKNOWN attribute is refused before any network I/O",
-                expect_refusal(
-                    unknown,
-                    AuthZenErrorCode::EvaluationUnavailable,
-                    "/evaluation/subject/properties/department",
-                    true,
-                ),
+                match unknown {
+                    Ok(d) => Err(format!(
+                        "expected a refusal, got a decision (allowed={})",
+                        d.allowed()
+                    )),
+                    Err(AuthZenEvaluationError::Unresolved { pointer, .. }) => expect(
+                        pointer == "/evaluation/subject/properties/department",
+                        &format!("pointer was {pointer:?}"),
+                    ),
+                    Err(other) => Err(format!(
+                        "expected an unresolved-attribute error, got {other}"
+                    )),
+                },
             );
         }
     }
@@ -275,8 +296,11 @@ async fn main() {
         .evaluate(request_with(typeless, ALLOWED_QUERY))
         .await
         .err()
-        .and_then(|e| e.as_refusal().and_then(|r| r.pointer.clone()));
-    let remote = raw_refusal_pointer(
+        .and_then(|e| {
+            e.as_refusal()
+                .and_then(|r| r.pointer.clone().map(|p| (p, r.code.to_string())))
+        });
+    let remote = raw_refusal(
         &agent,
         &client_id,
         &secret,
@@ -292,11 +316,28 @@ async fn main() {
     .await;
     run.check(
         "the SDK's local refusal names the same member the server names",
-        match (local, remote) {
-            (Some(l), Ok(Some(r))) => expect(
+        match (&local, &remote) {
+            (Some((l, _)), Ok((Some(r), _))) => expect(
                 l == r && l == "/evaluation/subject/type",
                 &format!("local pointer {l:?} vs server pointer {r:?}"),
             ),
+            (l, r) => Err(format!("local={l:?} remote={r:?}")),
+        },
+    );
+
+    // The code is READ, not equated. It is reported either way so a divergence
+    // that matters - a code this build cannot name - is visible in the log
+    // rather than hidden behind a pointer-only assertion.
+    run.check(
+        "the server's refusal code is one this build knows",
+        match (&local, &remote) {
+            (Some((_, l)), Ok((_, r))) => {
+                println!("       local code={l}  server code={r}");
+                expect(
+                    AuthZenErrorCode::from(r.clone()).is_known(),
+                    &format!("the server sent {r:?}, which is not in this build's enumeration"),
+                )
+            }
             (l, r) => Err(format!("local={l:?} remote={r:?}")),
         },
     );
@@ -359,18 +400,18 @@ async fn main() {
     );
 
     println!();
-    if run.passed != run.expected {
+    if run.ran != run.expected {
         println!(
             "FAIL: {} assertion(s) ran but {} were expected — checks stopped executing",
-            run.passed, run.expected
+            run.ran, run.expected
         );
         std::process::exit(1);
     }
-    if run.failed {
-        println!("FAIL: at least one assertion failed");
+    if run.failed > 0 {
+        println!("FAIL: {} of {} assertions failed", run.failed, run.ran);
         std::process::exit(1);
     }
-    println!("ALL PASS: {}/{} assertions", run.passed, run.expected);
+    println!("ALL PASS: {}/{} assertions", run.ran, run.expected);
 }
 
 // ---------------------------------------------------------------------------
@@ -479,13 +520,13 @@ async fn decide_verdict(
         .ok_or_else(|| format!("no verdict in {text}"))
 }
 
-/// The pointer the SERVER names for an envelope the SDK would refuse locally.
-async fn raw_refusal_pointer(
+/// The pointer AND code the SERVER names for an envelope the SDK refuses locally.
+async fn raw_refusal(
     agent: &str,
     client_id: &str,
     secret: &str,
     envelope: serde_json::Value,
-) -> Result<Option<String>, String> {
+) -> Result<(Option<String>, String), String> {
     let resp = reqwest::Client::new()
         .post(format!("{agent}{AUTHZEN_PATH}"))
         .header("Content-Type", "application/json")
@@ -500,9 +541,13 @@ async fn raw_refusal_pointer(
         return Err("the server ACCEPTED an envelope the SDK refuses; the two have diverged".into());
     }
     let v: serde_json::Value = resp.json().await.map_err(|e| format!("json: {e}"))?;
-    Ok(v.get("pointer")
-        .and_then(|p| p.as_str())
-        .map(|s| s.to_string()))
+    Ok((
+        v.get("pointer").and_then(|p| p.as_str()).map(String::from),
+        v.get("code")
+            .and_then(|c| c.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    ))
 }
 
 /// A request that does NOT negotiate the profile gets the bare boolean.

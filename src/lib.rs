@@ -38,14 +38,18 @@ pub(crate) const PATH_SEGMENT: &AsciiSet = &CONTROLS
     .add(b'/')
     .add(b'%');
 
+// `Attribute`, `AttributeMap` and `AttributeValue` are deliberately NOT
+// re-exported at the crate root. They are three maximally generic names, and
+// claiming them at the top level of a governance SDK for one surface's attribute
+// bag is a permanent commitment nobody would make on purpose. They live at
+// `axonflow_sdk_rust::authzen::{Attribute, ...}`.
 pub use authzen::{
-    Attribute, AttributeMap, AttributeValue, AuthZenAction, AuthZenApprovalClause,
-    AuthZenApprovalRequirement, AuthZenBulk, AuthZenCategory, AuthZenDecision, AuthZenEnvelope,
-    AuthZenError, AuthZenErrorCode, AuthZenEvaluationError, AuthZenIdentifier,
-    AuthZenIdentifierKind, AuthZenObligation, AuthZenObligationType, AuthZenOperationalState,
-    AuthZenReasonCode, AuthZenRequest, AuthZenResource, AuthZenResponse, AuthZenResponseContext,
-    AuthZenSubject, AUTHZEN_CONTRACT_SCHEMA_VERSION, AUTHZEN_PATH, AUTHZEN_PROFILE_HEADER,
-    AUTHZEN_PROFILE_V1,
+    AuthZenAction, AuthZenApprovalClause, AuthZenApprovalRequirement, AuthZenBulk, AuthZenCategory,
+    AuthZenDecision, AuthZenEnvelope, AuthZenError, AuthZenErrorCode, AuthZenEvaluationError,
+    AuthZenIdentifier, AuthZenIdentifierKind, AuthZenObligation, AuthZenObligationType,
+    AuthZenOperationalState, AuthZenReasonCode, AuthZenRequest, AuthZenResource, AuthZenResponse,
+    AuthZenResponseContext, AuthZenSubject, AUTHZEN_CONTRACT_SCHEMA_VERSION, AUTHZEN_PATH,
+    AUTHZEN_PROFILE_HEADER, AUTHZEN_PROFILE_V1,
 };
 pub use client::AxonFlowClient;
 pub use config::{AxonFlowConfig, CacheConfig, Mode, RetryConfig};

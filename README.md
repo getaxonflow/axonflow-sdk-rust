@@ -131,7 +131,7 @@ Then use `cargo run --example <name>` to execute an example:
     export AXONFLOW_DECISION_ID="dec_..." # from a recent blocked call or audit row
     cargo run --example explain_decision
     ```
-*   **AuthZEN-native authorization** (ADR-065) — eight steps, five of them refusals:
+*   **AuthZEN-native authorization** (ADR-065) — nine steps, four of them refusals:
     ```bash
     cargo run --example authzen
     ```
@@ -175,16 +175,18 @@ for obligation in decision.mandatory_obligations() {
 | | meaning | wire | outcome |
 |---|---|---|---|
 | `Attribute::known(v)` | the source answered with `v` | the member, with its value | evaluated |
-| `Attribute::absent()` | the source answered: there is no value | the member is **omitted** | evaluated; a fact with no value changes nothing |
-| `Attribute::unknown(why)` | the source **could not answer** | never reaches the wire | refused before the round trip, `evaluation_unavailable`, retryable |
+| `Attribute::absent()` | the source answered: there is no value | the MEMBER is omitted from the bag; the bag itself is still sent, so `properties` arrives as `{}` | evaluated; a fact with no value changes nothing |
+| `Attribute::unknown(why)` | the source **could not answer** | never reaches the wire | `AuthZenEvaluationError::Unresolved`, before the round trip |
 
 Absent and unknown are not the same event. Dropping an unknown attribute from the request would obtain a decision that weighed every attribute except the one nobody could read — and report it as complete. That is the exact failure the server refuses on its side of the wire ("accepting it would report that it was considered when it was not"); `Attribute` is the same refusal on yours. Read a value with `Attribute::fold`, which does not compile until you have said what all three states mean; `as_known()` collapses two of them and is for logging.
 
-**Only one refusal code is worth retrying.** `AuthZenEvaluationError::retryable()` is the whole set in one place: a refusal only when its code is `evaluation_unavailable`; a transport failure (timeout, connect, `5xx`, `429`); never an unreadable profile (retrying cannot make an older SDK able to read a newer one) and never an unusable response. Every other refusal code names something about the request, which will not change on a retry.
+**Only one refusal code is worth retrying.** `AuthZenEvaluationError::retryable()` is the whole set in one place: a server refusal only when its code is `evaluation_unavailable`; a transport failure (timeout, connect, `5xx`, `429`); never an unreadable profile (retrying cannot make an older SDK able to read a newer one), never an unusable response, and never an unresolved attribute - that refusal is frozen inside the request, so every resend reproduces it. The OPERATION may succeed once the attribute resolves, but only after you build a new request.
+
+This surface does **not** apply the client's `RetryConfig`: that executor is wired to the proxy path's request type, and retrying an authorization decision on your behalf is a policy decision this SDK does not make for you. Retry is yours, guided by `retryable()`.
 
 **A refusal is not a denial.** `decision: false` says the request was evaluated and denied. A refusal says it was never evaluated. They arrive as different types — `Ok(decision)` versus `Err(Refused(..))` — so no caller branch can conflate an auth failure, a malformed envelope or an outage with a policy denial.
 
-**The refusal vocabulary is shared across the wire.** The SDK validates before sending, and a local refusal carries the same code and the same JSON Pointer the server would have sent for the same bytes. `refusal.pointer` names the exact member to fix.
+**A local refusal names the same MEMBER the server would.** The SDK validates before sending, and a local refusal carries the JSON Pointer the server would have sent for the same bytes - verified against a live server by `runtime-e2e/authzen_evaluation`. The CODE may be narrower on the server side, and that is not a defect in either: this client knows only that a required member is missing and says `incomplete_evaluation`, while the server additionally knows which values it can evaluate and narrows the same condition to `unsupported_subject` with a `supported` list. Branch on `refusal.pointer` for "which member"; read the code as the server's more specific reading when there is one.
 
 **`allowed()` requires the state, not just the boolean.** It is true only when the collapsed boolean *and* the four-valued operational state both say `ALLOW`. A body where they disagree, one carrying no profile payload at all, or one written in a profile this build cannot read never becomes a decision — it becomes an error. There is no path that returns an allow the SDK could not fully read.
 
