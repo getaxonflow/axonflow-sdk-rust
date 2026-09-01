@@ -34,6 +34,16 @@
 //      I/O, which no amount of stubbing can establish. A transport error there
 //      would mean the envelope had already been handed to the network.
 //
+//   5. THE PROFILE NEGOTIATION REFUSES. The route's header contract has one
+//      refusal of its own - a profile the caller named and this build does not
+//      emit, answered 406 before anything is evaluated. Every other leg sends
+//      AUTHZEN_PROFILE_V1 or no header, both of which the server accepts, so
+//      nothing else here reaches the negotiation's failing side.
+//
+// NOT run by CI. The root Cargo.toml excludes `runtime-e2e`, so this crate is
+// not built by `cargo test`, `cargo clippy` or `cargo fmt --check`, and no
+// workflow stands up a stack to execute it. See this suite's README.
+//
 // Prints one line per assertion. EXPECTED_ASSERTIONS must equal the number
 // that ran: a suite whose checks stop executing prints no failures and exits 0,
 // which is indistinguishable from success.
@@ -46,12 +56,30 @@ use axonflow_sdk_rust::authzen::{
 use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig};
 use base64::Engine as _;
 
-const EXPECTED_ASSERTIONS: usize = 13;
+const EXPECTED_ASSERTIONS: usize = 14;
 
 /// A query the default community policy set permits.
 const ALLOWED_QUERY: &str = "what is our refund policy?";
 /// A query the default community policy set denies (SQL injection).
 const DENIED_QUERY: &str = "'; DROP TABLE users; --";
+
+/// The refusal codes that mean "the adapter READ this envelope and could not
+/// evaluate a member of it".
+///
+/// `malformed_envelope` is deliberately absent: it is what the route sends when
+/// the body never became an envelope, so accepting it would let a stack that
+/// rejects everything at the door satisfy an assertion about the mapping layer.
+/// `evaluation_unavailable` is absent for the same reason in the other
+/// direction - it is the evaluator being unreachable, not a member being
+/// unevaluable.
+const MAPPING_LAYER_CODES: &[&str] = &[
+    "incomplete_evaluation",
+    "unsupported_subject",
+    "unsupported_action",
+    "unsupported_resource",
+    "unevaluable_attribute",
+    "missing_evaluable_content",
+];
 
 struct Run {
     /// How many assertions actually EXECUTED. Compared against `expected` at the
@@ -317,7 +345,7 @@ async fn main() {
     run.check(
         "the SDK's local refusal names the same member the server names",
         match (&local, &remote) {
-            (Some((l, _)), Ok((Some(r), _))) => expect(
+            (Some((l, _)), Ok((_, Some(r), _))) => expect(
                 l == r && l == "/evaluation/subject/type",
                 &format!("local pointer {l:?} vs server pointer {r:?}"),
             ),
@@ -328,18 +356,47 @@ async fn main() {
     // The code is READ, not equated. It is reported either way so a divergence
     // that matters - a code this build cannot name - is visible in the log
     // rather than hidden behind a pointer-only assertion.
+    //
+    // `is_known()` ALONE would be satisfied by `malformed_envelope`, which is
+    // what a stack that rejects every body at the door sends - so on its own
+    // this assertion would pass against a server that never reached the
+    // adapter at all. Two things narrow it: the 422, which only the mapping
+    // layer emits (the door answers 400, an unreadable profile 406, an
+    // oversized body 413), and the accepted set, which is the adapter's own
+    // member-naming vocabulary with `malformed_envelope` deliberately left out.
     run.check(
-        "the server's refusal code is one this build knows",
+        "the server's refusal is a MAPPING-layer 422, with a code this build knows",
         match (&local, &remote) {
-            (Some((_, l)), Ok((_, r))) => {
-                println!("       local code={l}  server code={r}");
+            (Some((_, l)), Ok((status, _, r))) => {
+                println!("       local code={l}  server status={status} code={r}");
                 expect(
-                    AuthZenErrorCode::from(r.clone()).is_known(),
-                    &format!("the server sent {r:?}, which is not in this build's enumeration"),
+                    *status == 422,
+                    &format!("status was {status}, wanted 422 (a mapping-layer refusal)"),
                 )
+                .and_then(|()| {
+                    expect(
+                        AuthZenErrorCode::from(r.clone()).is_known(),
+                        &format!("the server sent {r:?}, which is not in this build's enumeration"),
+                    )
+                })
+                .and_then(|()| {
+                    expect(
+                        MAPPING_LAYER_CODES.contains(&r.as_str()),
+                        &format!(
+                            "the server sent {r:?}; a refusal that reached the adapter names one \
+                             of {MAPPING_LAYER_CODES:?}"
+                        ),
+                    )
+                })
             }
             (l, r) => Err(format!("local={l:?} remote={r:?}")),
         },
+    );
+
+    // --- 10b: the one refusal unique to the header contract ---------------
+    run.check(
+        "an unrecognised profile is refused with 406, naming the profile it does emit",
+        raw_unrecognised_profile_is_406(&agent, &client_id, &secret).await,
     );
 
     // --- 10: the bare boolean an un-negotiated caller receives ------------
@@ -520,13 +577,20 @@ async fn decide_verdict(
         .ok_or_else(|| format!("no verdict in {text}"))
 }
 
-/// The pointer AND code the SERVER names for an envelope the SDK refuses locally.
+/// The STATUS, pointer and code the SERVER names for an envelope the SDK
+/// refuses locally.
+///
+/// The status is carried out with the body because the code alone does not say
+/// WHERE the refusal happened. `malformed_envelope` at 400 is the door; a
+/// mapping code at 422 is the adapter having read the envelope and found a
+/// member it cannot evaluate. An assertion that reads only the code passes
+/// against a stack that rejects every body at the door.
 async fn raw_refusal(
     agent: &str,
     client_id: &str,
     secret: &str,
     envelope: serde_json::Value,
-) -> Result<(Option<String>, String), String> {
+) -> Result<(u16, Option<String>, String), String> {
     let resp = reqwest::Client::new()
         .post(format!("{agent}{AUTHZEN_PATH}"))
         .header("Content-Type", "application/json")
@@ -537,17 +601,81 @@ async fn raw_refusal(
         .send()
         .await
         .map_err(|e| format!("raw evaluation: {e}"))?;
-    if resp.status().is_success() {
+    let status = resp.status();
+    if status.is_success() {
         return Err("the server ACCEPTED an envelope the SDK refuses; the two have diverged".into());
     }
     let v: serde_json::Value = resp.json().await.map_err(|e| format!("json: {e}"))?;
     Ok((
+        status.as_u16(),
         v.get("pointer").and_then(|p| p.as_str()).map(String::from),
         v.get("code")
             .and_then(|c| c.as_str())
             .unwrap_or_default()
             .to_string(),
     ))
+}
+
+/// A profile this build does not emit is refused with 406, before anything is
+/// evaluated.
+///
+/// This is the ONE refusal unique to the route's header contract, and it is the
+/// only one no other assertion here can reach: every other leg sends
+/// `AUTHZEN_PROFILE_V1` or no header at all, and both of those are accepted.
+/// Raw HTTP because the SDK deliberately has no way to name a profile it cannot
+/// read - that is the point of the constant - so the header has to be set by
+/// hand to exercise the server's half of the negotiation.
+async fn raw_unrecognised_profile_is_406(
+    agent: &str,
+    client_id: &str,
+    secret: &str,
+) -> Result<(), String> {
+    let resp = reqwest::Client::new()
+        .post(format!("{agent}{AUTHZEN_PATH}"))
+        .header("Content-Type", "application/json")
+        .header(
+            AUTHZEN_PROFILE_HEADER,
+            "axonflow-authzen-profile-2099-01-01",
+        )
+        .header(
+            "Authorization",
+            format!("Basic {}", basic(client_id, secret)),
+        )
+        .header("X-Client-ID", client_id)
+        .json(&serde_json::json!({
+            "evaluation": {
+                "subject": {"type": "gateway", "id": "llm-gateway-01"},
+                "action": {"name": "llm.completion"},
+                "resource": {"type": "llm", "id": "llm"},
+                "context": {"args": {"query": ALLOWED_QUERY}}
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("raw evaluation: {e}"))?;
+    let status = resp.status();
+    let v: serde_json::Value = resp.json().await.map_err(|e| format!("json: {e}"))?;
+    // The envelope is EVALUABLE - the same one the un-negotiated leg sends and
+    // gets a 200 for. So a 406 here can only be the header, which is what makes
+    // this leg evidence about negotiation rather than about the body.
+    expect(
+        status.as_u16() == 406,
+        &format!("status was {status}, wanted 406; body={v}"),
+    )?;
+    let supported = v
+        .get("supported")
+        .and_then(|s| s.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    expect(
+        supported.iter().any(|s| s == AUTHZEN_PROFILE_V1),
+        &format!("the refusal did not name {AUTHZEN_PROFILE_V1:?} as supported: {v}"),
+    )
 }
 
 /// A request that does NOT negotiate the profile gets the bare boolean.

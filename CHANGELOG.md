@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reproduces the identical error; re-resolve and build a new request.
   A local refusal names the same MEMBER the server would, by JSON Pointer; the
   CODE may be narrower on the server, which knows the supported set.
+- Every public enum on this surface is `#[non_exhaustive]`:
+  `AuthZenEvaluationError` and the six generated wire enums
+  (`AuthZenErrorCode`, `AuthZenCategory`, `AuthZenIdentifierKind`,
+  `AuthZenObligationType`, `AuthZenOperationalState`, `AuthZenReasonCode`). The
+  wire enums' `Unknown(String)` variant round-trips an unrecognised value but
+  does NOT make them additive: a downstream match over the known variants plus
+  `Unknown(_)` is exhaustive today and would stop compiling the moment the
+  artifact gains a value, which is what ADR-065 does at v11. The attribute is
+  emitted by `tools/gen-authzen-types` rather than written into the generated
+  file, so it cannot drift away from the artifact.
 
 ## [0.8.2] - 2026-08-20: five RUSTSEC advisories cleared
 

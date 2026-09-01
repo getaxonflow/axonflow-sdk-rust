@@ -257,12 +257,20 @@ fn emit_enum(b: &mut String, e: &crate::surface::Enum) {
          /// newer server added after this build survives decode, re-encode and logging\n\
          /// intact instead of collapsing onto a neighbouring constant. It is, however,\n\
          /// a reason not to branch on the value as though it were one of the known\n\
-         /// ones - use [`{name}::is_known`].\n"
+         /// ones - use [`{name}::is_known`].\n\
+         ///\n\
+         /// `#[non_exhaustive]` because `Unknown` does not make this enum additive\n\
+         /// for a downstream crate. A match over the known variants plus\n\
+         /// `Unknown(_)` is exhaustive TODAY, and stops compiling the moment the\n\
+         /// artifact gains a value - which is exactly what ADR-065 does at v11.\n\
+         /// With the attribute, that same match needs a `_` arm and a new value is\n\
+         /// a minor release rather than a breaking one.\n"
     );
     let _ = write!(
         b,
         "#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]\n\
          #[serde(from = \"String\", into = \"String\")]\n\
+         #[non_exhaustive]\n\
          pub enum {name} {{\n"
     );
     for v in &e.values {

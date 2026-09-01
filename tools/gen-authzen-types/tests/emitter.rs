@@ -200,6 +200,34 @@ fn every_declared_type_and_enum_reaches_the_output() {
 }
 
 #[test]
+fn every_emitted_enum_is_non_exhaustive() {
+    // The byte-comparison gate cannot catch this on its own: deleting the
+    // attribute from the emitter and regenerating leaves the committed file
+    // exactly what the emitter now produces, so `--check` is green and the
+    // public surface has silently become breaking-on-extension. The property
+    // is asserted HERE, against the emitter's output, for that reason.
+    //
+    // Scanned by RENDERING rather than by naming the six enums the current
+    // artifact declares: a seventh added tomorrow would be invisible to a list.
+    let out = render(&base_artifact()).expect("emits");
+    let lines: Vec<&str> = out.lines().collect();
+    let mut seen = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if !line.starts_with("pub enum ") {
+            continue;
+        }
+        seen += 1;
+        assert!(
+            i > 0 && lines[i - 1] == "#[non_exhaustive]",
+            "{line} is not preceded by #[non_exhaustive]; \
+             a match over its variants plus Unknown(_) is exhaustive today and \
+             breaks downstream the moment the artifact gains a value"
+        );
+    }
+    assert!(seen > 0, "no `pub enum` reached the output at all:\n{out}");
+}
+
+#[test]
 fn exactly_one_emitted_type_is_lenient_about_unknown_members() {
     // The one special case in the emitter, pinned so it cannot silently widen or
     // vanish. Strictness on a DECISION stops a caller acting on a partial

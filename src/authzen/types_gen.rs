@@ -38,8 +38,16 @@ pub const AUTHZEN_CONTRACT_SCHEMA_VERSION: &str = "2026-08-29";
 /// intact instead of collapsing onto a neighbouring constant. It is, however,
 /// a reason not to branch on the value as though it were one of the known
 /// ones - use [`AuthZenErrorCode::is_known`].
+///
+/// `#[non_exhaustive]` because `Unknown` does not make this enum additive
+/// for a downstream crate. A match over the known variants plus
+/// `Unknown(_)` is exhaustive TODAY, and stops compiling the moment the
+/// artifact gains a value - which is exactly what ADR-065 does at v11.
+/// With the attribute, that same match needs a `_` arm and a new value is
+/// a minor release rather than a breaking one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
+#[non_exhaustive]
 pub enum AuthZenErrorCode {
     /// `malformed_envelope`
     MalformedEnvelope,
@@ -137,8 +145,16 @@ impl std::fmt::Display for AuthZenErrorCode {
 /// intact instead of collapsing onto a neighbouring constant. It is, however,
 /// a reason not to branch on the value as though it were one of the known
 /// ones - use [`AuthZenCategory::is_known`].
+///
+/// `#[non_exhaustive]` because `Unknown` does not make this enum additive
+/// for a downstream crate. A match over the known variants plus
+/// `Unknown(_)` is exhaustive TODAY, and stops compiling the moment the
+/// artifact gains a value - which is exactly what ADR-065 does at v11.
+/// With the attribute, that same match needs a `_` arm and a new value is
+/// a minor release rather than a breaking one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
+#[non_exhaustive]
 pub enum AuthZenCategory {
     /// `allowed`
     Allowed,
@@ -221,8 +237,16 @@ impl std::fmt::Display for AuthZenCategory {
 /// intact instead of collapsing onto a neighbouring constant. It is, however,
 /// a reason not to branch on the value as though it were one of the known
 /// ones - use [`AuthZenIdentifierKind::is_known`].
+///
+/// `#[non_exhaustive]` because `Unknown` does not make this enum additive
+/// for a downstream crate. A match over the known variants plus
+/// `Unknown(_)` is exhaustive TODAY, and stops compiling the moment the
+/// artifact gains a value - which is exactly what ADR-065 does at v11.
+/// With the attribute, that same match needs a `_` arm and a new value is
+/// a minor release rather than a breaking one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
+#[non_exhaustive]
 pub enum AuthZenIdentifierKind {
     /// `organization`
     Organization,
@@ -320,8 +344,16 @@ impl std::fmt::Display for AuthZenIdentifierKind {
 /// intact instead of collapsing onto a neighbouring constant. It is, however,
 /// a reason not to branch on the value as though it were one of the known
 /// ones - use [`AuthZenObligationType::is_known`].
+///
+/// `#[non_exhaustive]` because `Unknown` does not make this enum additive
+/// for a downstream crate. A match over the known variants plus
+/// `Unknown(_)` is exhaustive TODAY, and stops compiling the moment the
+/// artifact gains a value - which is exactly what ADR-065 does at v11.
+/// With the attribute, that same match needs a `_` arm and a new value is
+/// a minor release rather than a breaking one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
+#[non_exhaustive]
 pub enum AuthZenObligationType {
     /// `approval_challenge`
     ApprovalChallenge,
@@ -449,8 +481,16 @@ impl std::fmt::Display for AuthZenObligationType {
 /// intact instead of collapsing onto a neighbouring constant. It is, however,
 /// a reason not to branch on the value as though it were one of the known
 /// ones - use [`AuthZenOperationalState::is_known`].
+///
+/// `#[non_exhaustive]` because `Unknown` does not make this enum additive
+/// for a downstream crate. A match over the known variants plus
+/// `Unknown(_)` is exhaustive TODAY, and stops compiling the moment the
+/// artifact gains a value - which is exactly what ADR-065 does at v11.
+/// With the attribute, that same match needs a `_` arm and a new value is
+/// a minor release rather than a breaking one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
+#[non_exhaustive]
 pub enum AuthZenOperationalState {
     /// `ALLOW`
     Allow,
@@ -523,8 +563,16 @@ impl std::fmt::Display for AuthZenOperationalState {
 /// intact instead of collapsing onto a neighbouring constant. It is, however,
 /// a reason not to branch on the value as though it were one of the known
 /// ones - use [`AuthZenReasonCode::is_known`].
+///
+/// `#[non_exhaustive]` because `Unknown` does not make this enum additive
+/// for a downstream crate. A match over the known variants plus
+/// `Unknown(_)` is exhaustive TODAY, and stops compiling the moment the
+/// artifact gains a value - which is exactly what ADR-065 does at v11.
+/// With the attribute, that same match needs a `_` arm and a new value is
+/// a minor release rather than a breaking one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
+#[non_exhaustive]
 pub enum AuthZenReasonCode {
     /// `permitted`
     Permitted,

@@ -1041,3 +1041,62 @@ fn a_response_context_that_names_another_profile_does_not_validate() {
     let err = decoded.validate("").expect_err("refused");
     assert_eq!(err.pointer.as_deref(), Some("/context/profile"));
 }
+
+#[test]
+fn every_public_enum_on_this_surface_is_non_exhaustive_except_the_tri_state() {
+    // Read from SOURCE because there is no runtime witness: `#[non_exhaustive]`
+    // exists only to make a downstream `match` require a `_` arm, and a test in
+    // this crate is inside the defining crate, where the attribute has no
+    // effect at all. Scanning the module is also what makes this a CLASS check
+    // rather than a list: an enum added to `src/authzen/` tomorrow is covered
+    // without anybody remembering to extend a names array.
+    //
+    // `Attribute` is the deliberate exception, and the exception is the point.
+    // Known / Absent / Unknown is a CLOSED three-valued type; `fold` forces a
+    // caller to answer all three, and a fourth state is not something this
+    // surface may grow. Marking it non-exhaustive would hand every caller a
+    // `_` arm and quietly retire that guarantee.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/authzen");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&root)
+        .expect("src/authzen is readable")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
+        .collect();
+    files.sort();
+    assert!(
+        !files.is_empty(),
+        "no sources found under {}",
+        root.display()
+    );
+
+    let mut checked = 0;
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("readable");
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("pub enum ") {
+                continue;
+            }
+            if trimmed.starts_with("pub enum Attribute") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                i > 0 && lines[i - 1].trim() == "#[non_exhaustive]",
+                "{}:{}: `{}` is not preceded by #[non_exhaustive]; a downstream \
+                 match over its variants is exhaustive today and breaks the \
+                 moment this surface grows one",
+                path.display(),
+                i + 1,
+                trimmed
+            );
+        }
+    }
+    assert!(
+        checked >= 7,
+        "only {checked} public enums were examined; the scan found less than the \
+         six generated wire enums plus AuthZenEvaluationError, so it is not \
+         reading what it thinks it is"
+    );
+}

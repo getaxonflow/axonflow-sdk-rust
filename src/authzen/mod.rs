@@ -161,7 +161,14 @@ impl std::error::Error for AuthZenError {}
 ///
 /// Collapsing them into one opaque error would leave a caller with a string to
 /// match on.
+///
+/// `#[non_exhaustive]` because this enum has no catch-all variant and is a
+/// public surface committed through v11. Without the attribute, every
+/// downstream `match` over the six variants is exhaustive, and the first
+/// outcome this surface learns to distinguish would break all of them. With it,
+/// a caller writes a `_` arm once and a seventh variant is a minor release.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AuthZenEvaluationError {
     /// The request was refused rather than evaluated - by the server, or by
     /// this client before the round trip.

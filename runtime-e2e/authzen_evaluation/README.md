@@ -12,9 +12,13 @@ Real-stack proof that the Rust SDK's AuthZEN-native surface - `AxonFlowClient::e
 
    The **codes are not equal, and that is not a defect** - the suite prints both rather than asserting equality. This client knows only that a required member is missing (`incomplete_evaluation`); the server additionally knows which values it can evaluate and narrows the same condition to `unsupported_subject` with a `supported` list. What the suite *does* assert is that the server's code is one this build knows: a code outside the closed enumeration means the contract moved and this SDK cannot read the refusal, which no unit test can discover.
 
+   "Is a code this build knows" is not enough on its own, and the suite no longer stops there. `malformed_envelope` is also a code this build knows, and it is what a server that rejects every body at the door would send - so read in isolation that assertion would pass against a stack that never reached the adapter. Two things narrow it: the status must be **422**, which only the mapping layer emits (the door answers 400, an unreadable profile 406, an oversized body 413), and the code must be one of the adapter's own member-naming codes, a set that leaves `malformed_envelope` and `evaluation_unavailable` out on purpose.
+
 3. **The bare-boolean case is real.** The SDK refuses a `200` carrying no profile payload, on the grounds that the obligations and the approval challenge that constrain an allow ride in it. That guard is only worth something if a server can actually produce such a body, so this sends one un-negotiated request and asserts the response has a `decision` and no `context`.
 
 4. **An unresolvable attribute never reaches the network.** Asserted by pointing the *real* client at a port nothing is listening on: a typed refusal from that client is proof the check ran before any I/O. No amount of stubbing establishes that - a stub answers, so a request that reached it looks the same as one that did not.
+
+5. **The profile negotiation actually refuses.** This route's header contract has exactly one refusal of its own - a profile the caller named and this build does not emit, answered `406` before anything is evaluated. Every other leg here sends `AUTHZEN_PROFILE_V1` or no header at all, and the server accepts both, so nothing else in the suite touches the negotiation's failing side. The 406 leg sends an unrecognised non-empty profile with an envelope that is otherwise *evaluable* - the same one the un-negotiated leg gets a `200` for - so the refusal can only be the header, and it asserts the response names `axonflow-authzen-profile-2026-08-29` as what the server does emit.
 
 ## The three attribute states, observed
 
@@ -29,6 +33,12 @@ The lane's central claim is that a resolved attribute has three states and `Opti
 The wire shape of an absent member is pinned by `tests/authzen_surface_test.rs`, not here: the server tolerates both `{}` and no bag at all, so there is nothing for a live assertion to see. What IS observable live is the pair - absent allows, known is refused by name.
 
 Collapse absent and unknown into one `None` and rows 1 and 3 become the same call. Whichever way that single branch is written, one of those two rows is wrong: either an unresolvable fact is silently dropped from an authorization decision, or an ordinary "there is no value" becomes an error the caller cannot clear.
+
+## What this suite is, and is not, evidence of
+
+It is a HAND RUN, and in this repository that is a stronger disclaimer than in the Java SDK. No workflow stands up a stack and executes `runtime-e2e/`; there is not even a presence gate on it, and the root `Cargo.toml` carries `exclude = ["runtime-e2e"]`, so `cargo test`, `cargo clippy` and `cargo fmt --check` do not so much as COMPILE this helper. Nothing in CI would notice if it stopped building. Every suite in this directory is in the same position, and wiring a stack-booting workflow into this repo is a change of a different size from one SDK surface.
+
+Read any pasted output as what it is: reproducible from the command below, not repeated by CI. The compile check that IS worth pasting alongside a change here is `cargo check --manifest-path runtime-e2e/authzen_evaluation/helper/Cargo.toml`, because it is the only thing standing between an edit and a suite that no longer builds.
 
 ## Assertion floor
 

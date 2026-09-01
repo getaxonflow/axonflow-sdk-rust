@@ -126,9 +126,21 @@ jobs:
           echo "community stack version: $VERSION (AuthZEN needs >= $AUTHZEN_MIN_STACK_VERSION)"
           OLDEST=$(printf '%s\n%s\n' "$VERSION" "$AUTHZEN_MIN_STACK_VERSION" | sort -V | head -1)
           if [ "$VERSION" != "$AUTHZEN_MIN_STACK_VERSION" ] && [ "$OLDEST" = "$VERSION" ]; then
-            echo "::notice::community mirror at $VERSION predates the AuthZEN surface; the example is not run. This step becomes mandatory at $AUTHZEN_MIN_STACK_VERSION with no edit."
+            # A ::notice:: is invisible on the checks list: the step exits 0 and
+            # the job shows a plain green tick, so "the AuthZEN example never
+            # ran" and "the AuthZEN example passed" look identical to anyone
+            # reading CI rather than the log. A ::warning:: annotates the run,
+            # and the step summary puts the reason on the job's own page.
+            echo "::warning::AuthZEN example SKIPPED: community mirror at $VERSION predates the AuthZEN surface (needs >= $AUTHZEN_MIN_STACK_VERSION). This step becomes mandatory at $AUTHZEN_MIN_STACK_VERSION with no edit."
+            {
+              echo "### AuthZEN example: SKIPPED"
+              echo
+              echo "Community mirror is at \`$VERSION\`; the AuthZEN surface needs \`>= $AUTHZEN_MIN_STACK_VERSION\`."
+              echo "This step runs itself with no edit once the mirror reaches that version."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          echo "### AuthZEN example: RAN against community stack \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
           timeout 120 cargo run --example authzen
 
       # Logs MUST be captured before `Stop Community Stack` runs — `compose
