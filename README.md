@@ -131,6 +131,64 @@ Then use `cargo run --example <name>` to execute an example:
     export AXONFLOW_DECISION_ID="dec_..." # from a recent blocked call or audit row
     cargo run --example explain_decision
     ```
+*   **AuthZEN-native authorization** (ADR-065) — eight steps, five of them refusals:
+    ```bash
+    cargo run --example authzen
+    ```
+
+## AuthZEN-native authorization (ADR-065)
+
+`POST /api/v1/access/evaluation` is the AuthZEN-shaped authorization surface. It is the surface to write **new** integrations against: at v11 the engine behind it becomes the ADR-065 Policy Decision Point with no wire change, so an integration written against it migrates once rather than twice. Nothing here is deprecated — the existing decision surface stays wire-stable through all of v11. See `docs/AUTHZEN_MIGRATION_DRAFT.md`.
+
+```rust
+use axonflow_sdk_rust::authzen::{
+    Attribute, AuthZenAction, AuthZenRequest, AuthZenResource, AuthZenSubject,
+};
+
+let decision = client
+    .evaluate(
+        AuthZenRequest::evaluating(
+            AuthZenSubject::new("gateway", "llm-gateway-01"),
+            AuthZenAction::new("llm.completion"),
+            AuthZenResource::new("llm", "llm"),
+        )
+        .with_query(Attribute::known(user_prompt))
+        .with_correlation("x-session-id", Attribute::known(session_id)),
+    )
+    .await?;
+
+if !decision.allowed() {
+    return Err(format!("blocked: {} ({})", decision.state(), decision.category()).into());
+}
+for obligation in decision.mandatory_obligations() {
+    // An allow with an undischarged mandatory obligation is NOT an allow.
+    discharge(obligation)?;
+}
+```
+
+`evaluate_all` takes several preconditions of **one** operation and returns **one** decision: the entries combine to the least permissive outcome, so one denied entry denies the operation. An API returning a list would invite a caller to act on the entry it liked.
+
+### Known gotchas
+
+**A resolved attribute has three states, and `Option` carries two.** Every attribute bag — `subject.properties`, `action.properties`, `resource.properties`, and `context` — holds `Attribute<T>` values, not `Option<T>`:
+
+| | meaning | wire | outcome |
+|---|---|---|---|
+| `Attribute::known(v)` | the source answered with `v` | the member, with its value | evaluated |
+| `Attribute::absent()` | the source answered: there is no value | the member is **omitted** | evaluated; a fact with no value changes nothing |
+| `Attribute::unknown(why)` | the source **could not answer** | never reaches the wire | refused before the round trip, `evaluation_unavailable`, retryable |
+
+Absent and unknown are not the same event. Dropping an unknown attribute from the request would obtain a decision that weighed every attribute except the one nobody could read — and report it as complete. That is the exact failure the server refuses on its side of the wire ("accepting it would report that it was considered when it was not"); `Attribute` is the same refusal on yours. Read a value with `Attribute::fold`, which does not compile until you have said what all three states mean; `as_known()` collapses two of them and is for logging.
+
+**Only one refusal code is worth retrying.** `AuthZenEvaluationError::retryable()` is the whole set in one place: a refusal only when its code is `evaluation_unavailable`; a transport failure (timeout, connect, `5xx`, `429`); never an unreadable profile (retrying cannot make an older SDK able to read a newer one) and never an unusable response. Every other refusal code names something about the request, which will not change on a retry.
+
+**A refusal is not a denial.** `decision: false` says the request was evaluated and denied. A refusal says it was never evaluated. They arrive as different types — `Ok(decision)` versus `Err(Refused(..))` — so no caller branch can conflate an auth failure, a malformed envelope or an outage with a policy denial.
+
+**The refusal vocabulary is shared across the wire.** The SDK validates before sending, and a local refusal carries the same code and the same JSON Pointer the server would have sent for the same bytes. `refusal.pointer` names the exact member to fix.
+
+**`allowed()` requires the state, not just the boolean.** It is true only when the collapsed boolean *and* the four-valued operational state both say `ALLOW`. A body where they disagree, one carrying no profile payload at all, or one written in a profile this build cannot read never becomes a decision — it becomes an error. There is no path that returns an allow the SDK could not fully read.
+
+**The types are generated, never hand-written.** `src/authzen/types_gen.rs` is emitted from `testdata/authzen-surface.json`, the platform's canonical contract artifact, by `tools/gen-authzen-types`. Regenerate with `cargo run -p axonflow-authzen-codegen`; `cargo test` fails if the committed file is not what the artifact generates.
 
 ## Advanced Features
 

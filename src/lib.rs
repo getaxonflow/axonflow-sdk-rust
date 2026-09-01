@@ -1,3 +1,4 @@
+pub mod authzen;
 pub mod client;
 pub mod config;
 pub mod decisions;
@@ -37,6 +38,15 @@ pub(crate) const PATH_SEGMENT: &AsciiSet = &CONTROLS
     .add(b'/')
     .add(b'%');
 
+pub use authzen::{
+    Attribute, AttributeMap, AttributeValue, AuthZenAction, AuthZenApprovalClause,
+    AuthZenApprovalRequirement, AuthZenBulk, AuthZenCategory, AuthZenDecision, AuthZenEnvelope,
+    AuthZenError, AuthZenErrorCode, AuthZenEvaluationError, AuthZenIdentifier,
+    AuthZenIdentifierKind, AuthZenObligation, AuthZenObligationType, AuthZenOperationalState,
+    AuthZenReasonCode, AuthZenRequest, AuthZenResource, AuthZenResponse, AuthZenResponseContext,
+    AuthZenSubject, AUTHZEN_CONTRACT_SCHEMA_VERSION, AUTHZEN_PATH, AUTHZEN_PROFILE_HEADER,
+    AUTHZEN_PROFILE_V1,
+};
 pub use client::AxonFlowClient;
 pub use config::{AxonFlowConfig, CacheConfig, Mode, RetryConfig};
 pub use error::AxonFlowError;

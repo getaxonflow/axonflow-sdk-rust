@@ -99,6 +99,38 @@ jobs:
           AXONFLOW_CLIENT_SECRET: demo-secret
         run: timeout 60 cargo run --example anthropic_interceptor
 
+      # The AuthZEN surface (ADR-065, enterprise #3603 / #3611) reaches the
+      # community mirror with the v10.3.0 sync. Until then the route does not
+      # exist on this stack and the example cannot run.
+      #
+      # THE GATE ARMS ITSELF. It is a version comparison against the running
+      # stack, not a hard-coded skip somebody has to remember to delete: the
+      # first mirror build at 10.3.0 or later turns this step from a notice into
+      # a required run, and a stack at that version WITHOUT the route fails here
+      # rather than reporting a pass. An `if: false` or a commented-out step
+      # would have to be noticed by a human to ever run at all.
+      - name: Run integration test (authzen)
+        env:
+          AXONFLOW_AGENT_URL: http://localhost:8080
+          AXONFLOW_ENDPOINT: http://localhost:8080
+          AXONFLOW_CLIENT_ID: demo-client
+          AXONFLOW_CLIENT_SECRET: demo-secret
+          AUTHZEN_MIN_STACK_VERSION: '10.3.0'
+        run: |
+          set -euo pipefail
+          # Captured, not piped into a matcher: `curl | grep -q` under
+          # `set -o pipefail` reports failure BECAUSE grep matched and closed
+          # the pipe early.
+          HEALTH=$(curl -sf http://localhost:8080/health)
+          VERSION=$(printf '%s' "$HEALTH" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          echo "community stack version: $VERSION (AuthZEN needs >= $AUTHZEN_MIN_STACK_VERSION)"
+          OLDEST=$(printf '%s\n%s\n' "$VERSION" "$AUTHZEN_MIN_STACK_VERSION" | sort -V | head -1)
+          if [ "$VERSION" != "$AUTHZEN_MIN_STACK_VERSION" ] && [ "$OLDEST" = "$VERSION" ]; then
+            echo "::notice::community mirror at $VERSION predates the AuthZEN surface; the example is not run. This step becomes mandatory at $AUTHZEN_MIN_STACK_VERSION with no edit."
+            exit 0
+          fi
+          timeout 120 cargo run --example authzen
+
       # Logs MUST be captured before `Stop Community Stack` runs — `compose
       # down` destroys the containers and `compose logs` then returns nothing.
       - name: Show Docker Logs on Failure
