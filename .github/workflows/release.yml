@@ -127,7 +127,11 @@ jobs:
       - name: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
+        # -p is load-bearing since the workspace gained tools/gen-authzen-types
+        # (publish = false): a bare `cargo publish` in a workspace refuses on the
+        # unpublishable member instead of skipping it, which is exactly how the
+        # v0.9.0 publish failed. Scope to the one crate that ships.
+        run: cargo publish -p axonflow-sdk-rust
 
       - name: Verify version is live on crates.io
         # Poll the API up to ~7.5 minutes (30 × 15s). v0.1.0 needed >30s; v0.2.0
