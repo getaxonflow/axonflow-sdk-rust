@@ -145,12 +145,16 @@ jobs:
 
       # Logs MUST be captured before `Stop Community Stack` runs — `compose
       # down` destroys the containers and `compose logs` then returns nothing.
+      # Written INSIDE the workspace: upload-artifact refuses relative `..`
+      # paths ("Invalid pattern"), and the old `../axonflow/...` file was
+      # only written by the later Stop step anyway, so nothing ever uploaded.
       - name: Show Docker Logs on Failure
         if: failure()
         run: |
           if [ -d "../axonflow" ]; then
             cd ../axonflow
             docker compose logs --tail=200 || true
+            docker compose logs --tail=500 > "$GITHUB_WORKSPACE/docker-compose-logs.txt" 2>/dev/null || true
           fi
 
       - name: Upload Docker Logs on Failure
@@ -158,7 +162,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: docker-compose-logs
-          path: ../axonflow/docker-compose-logs.txt
+          path: docker-compose-logs.txt
           if-no-files-found: ignore
 
       - name: Stop Community Stack
