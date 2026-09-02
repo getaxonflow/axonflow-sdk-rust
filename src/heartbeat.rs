@@ -125,6 +125,25 @@ struct GateInner {
     /// deployment that can never reach the checkpoint service stops probing
     /// its own platform every hour forever. Reset on delivery.
     consecutive_failures: u32,
+    /// When this process last DELIVERED a ping.
+    ///
+    /// The stamp file is the cross-restart record of that, but it is not
+    /// always available: `resolve_stamp_path` returns `None` where there is no
+    /// usable cache dir (HOME unset — distroless and scratch containers,
+    /// Lambda custom runtimes), and `write_stamp` silently fails on a
+    /// read-only root filesystem (`readOnlyRootFilesystem: true` is ordinary
+    /// Kubernetes hardening). In both, `stamp_is_fresh` is false forever.
+    ///
+    /// Before 0.10.0 that was bounded by the `Once` gate at one ping per
+    /// PROCESS. Replacing `Once` with the 1-hour guard removed that bound, and
+    /// a SUCCESSFUL ping would then recur every hour indefinitely — 168x the
+    /// "at most one ping per machine every 7 days" this SDK discloses, in
+    /// exactly the environments least able to notice. The failure backoff
+    /// cannot help: it resets on delivery, and these deliveries succeed.
+    ///
+    /// So the cadence is enforced in memory too. Redundant whenever the stamp
+    /// works, and the only bound when it does not.
+    last_delivered: Option<Instant>,
 }
 
 fn gate() -> &'static Mutex<GateInner> {
@@ -134,6 +153,7 @@ fn gate() -> &'static Mutex<GateInner> {
             last_checked: None,
             in_flight: false,
             consecutive_failures: 0,
+            last_delivered: None,
         })
     })
 }
@@ -176,6 +196,15 @@ fn claim_gate_slot() -> Option<GateSlot> {
     }
     if let Some(last) = inner.last_checked {
         if last.elapsed() < guard_interval_for(inner.consecutive_failures) {
+            return None;
+        }
+    }
+    // The 7-day cadence, enforced in memory rather than only by the stamp
+    // file. See `GateInner::last_delivered`: where the stamp cannot be
+    // persisted this is the only thing standing between a delivered ping and
+    // an hourly one.
+    if let Some(delivered) = inner.last_delivered {
+        if delivered.elapsed() < HEARTBEAT_INTERVAL {
             return None;
         }
     }
@@ -222,6 +251,7 @@ fn record_attempt(delivered: bool) {
     let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
     if delivered {
         inner.consecutive_failures = 0;
+        inner.last_delivered = Some(Instant::now());
     } else {
         inner.consecutive_failures = inner.consecutive_failures.saturating_add(1);
     }
@@ -363,14 +393,22 @@ fn stamp_is_fresh(stamp_path: &PathBuf) -> bool {
 /// developer's real `~/Library/Caches/axonflow/` stamp — which would otherwise
 /// both suppress the tests and clobber a real heartbeat cadence — without
 /// adding an environment override to the shipped surface.
+/// Outer `None`: no override, use the real path. Outer `Some(None)`: model an
+/// environment with NO usable stamp path at all.
 #[cfg(test)]
-static STAMP_PATH_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+static STAMP_PATH_OVERRIDE: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
 
 fn resolve_stamp_path() -> Option<PathBuf> {
     #[cfg(test)]
     {
-        if let Some(path) = STAMP_PATH_OVERRIDE.lock().unwrap().clone() {
-            return Some(path);
+        // Poison-recovering like every other telemetry lock: a panic in one
+        // test must not make every later client construction panic here.
+        if let Some(path) = STAMP_PATH_OVERRIDE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return path;
         }
     }
     home::home_dir().map(|mut p| {
@@ -956,6 +994,7 @@ fn reset_gate_for_tests() {
     inner.last_checked = None;
     inner.in_flight = false;
     inner.consecutive_failures = 0;
+    inner.last_delivered = None;
 }
 
 /// The guard interval has elapsed — and NOTHING else has changed.
@@ -969,6 +1008,20 @@ fn reopen_gate_for_tests() {
     let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
     inner.last_checked = None;
     inner.in_flight = false;
+}
+
+/// The 7-day boundary has been crossed: the short guard has elapsed AND the
+/// last delivery is older than the heartbeat interval.
+///
+/// Distinct from [`reopen_gate_for_tests`], which models only an hour passing.
+/// A test that means "a week later" has to say so, or the in-memory cadence
+/// floor refuses its claim and the test reads as a regression.
+#[cfg(test)]
+fn cross_the_heartbeat_interval_for_tests() {
+    let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
+    inner.last_checked = None;
+    inner.in_flight = false;
+    inner.last_delivered = Instant::now().checked_sub(HEARTBEAT_INTERVAL + Duration::from_secs(1));
 }
 
 /// Put the gate into a specific state so a test can ask it to REFUSE.

@@ -240,24 +240,55 @@ mutant "backoff computed but not consulted at the call site" \
   '        if last.elapsed() < HEARTBEAT_GUARD_INTERVAL {'
 
 # ---------------------------------------------------------------------------
+# 10c. The in-memory 7-day cadence floor is removed, so a machine that cannot
+#      persist the stamp file (HOME unset, read-only root filesystem) delivers
+#      a ping every guard interval forever - 168x the disclosed rate, and the
+#      failure backoff cannot help because these attempts succeed.
+# ---------------------------------------------------------------------------
+mutant "in-memory 7-day cadence floor removed" \
+  "heartbeat::tests::a_stampless_environment_still_honours_the_seven_day_cadence" \
+  '    if let Some(delivered) = inner.last_delivered {
+        if delivered.elapsed() < HEARTBEAT_INTERVAL {
+            return None;
+        }
+    }' \
+  '    let _ = inner.last_delivered;'
+
+# ---------------------------------------------------------------------------
+# 10d. The probe stops identifying itself. This is the first SDK feature that
+#      contacts the caller's own platform unsolicited; an unattributable
+#      request in their access log is the difference between "the SDK" and
+#      "something".
+# ---------------------------------------------------------------------------
+mutant "probe User-Agent removed" \
+  "heartbeat::tests::probe_makes_exactly_one_request_per_heartbeat" \
+  '        .user_agent(concat!("axonflow-sdk-rust/", env!("CARGO_PKG_VERSION")))
+' \
+  ''
+
+# ---------------------------------------------------------------------------
 # 11 + 12. The two source-scanning guards, attacked the way an earlier version
 #     of them was actually evaded in review: a request issued through
 #     `Client::execute` rather than `.send()`, and a second transport built
 #     through `ClientBuilder::new()` rather than `reqwest::Client::builder()`.
 #     Both left the previous guards green.
 # ---------------------------------------------------------------------------
-mutant_in "src/client.rs" "an ungated request issued via Client::execute" \
+# Planted at `raw_get`, deliberately NOT at `checked_get`: `checked_get` is
+# exercised by a behavioural test, which would kill this mutant on its own and
+# leave the source guard's own strength unmeasured. `raw_get` has no such test,
+# so only the guard can catch it. UFCS form, because that is what evaded the
+# guard in review.
+mutant_in "src/client.rs" "an ungated request issued via UFCS Client::execute" \
   "heartbeat::tests::no_http_send_outside_the_dispatch_funnel" \
-  '    pub(crate) async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self.dispatch(self.http_client.get(url)).await?;' \
-  '    pub(crate) async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        let built = self.http_client.get(url).build()?;
-        let resp = self.http_client.execute(built).await?;'
+  '        Ok(self.dispatch(self.http_client.get(url)).await?)' \
+  '        let built = self.http_client.get(url).build()?;
+        Ok(reqwest::Client::execute(&self.http_client, built).await?)'
 
-mutant_in "src/client.rs" "a second transport built via ClientBuilder::new" \
+# Qualified-path form, which is what evaded the guard in review.
+mutant_in "src/client.rs" "a second transport built via a qualified path" \
   "heartbeat::tests::the_telemetry_path_builds_exactly_one_http_client" \
   '        let http_client = reqwest::Client::builder()' \
-  '        let _extra = reqwest::ClientBuilder::new().build();
+  '        let _extra: Result<reqwest::Client, _> = <reqwest::Client>::builder().build();
         let http_client = reqwest::Client::builder()'
 
 printf '\n=== mutation gate: %d killed, %d survived\n' "$pass" "$fail"

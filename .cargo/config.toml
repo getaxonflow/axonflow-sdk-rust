@@ -9,7 +9,13 @@
 # deleted line away from a live-fire test suite.
 #
 # `force` is left at its default (false), so a value exported in the shell
-# still wins. That is how the runtime-e2e proof turns telemetry back on while
-# pointing `AXONFLOW_CHECKPOINT_URL` at a local listener.
+# still wins: `AXONFLOW_TELEMETRY=on cargo run --example basic` is how you
+# observe a real ping from this repository. Note that `cargo run` is covered
+# too, so an example run from here sends nothing unless you export it.
+#
+# The runtime-e2e helper does NOT rely on that: it calls
+# `std::env::remove_var("AXONFLOW_TELEMETRY")` in-process at startup
+# (`runtime-e2e/3660_health_relay_telemetry/helper/src/main.rs`), which is
+# load bearing - delete that line and the suite stops proving anything.
 [env]
 AXONFLOW_TELEMETRY = "off"

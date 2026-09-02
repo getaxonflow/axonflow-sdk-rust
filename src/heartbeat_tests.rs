@@ -66,7 +66,7 @@ impl TelemetryTestEnv {
         std::env::remove_var("AXONFLOW_CHECKPOINT_URL");
         *STAMP_PATH_OVERRIDE
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(stamp_path.clone());
+            .unwrap_or_else(|e| e.into_inner()) = Some(Some(stamp_path.clone()));
         reset_gate_for_tests();
         TELEMETRY_ARMED_FOR_TESTS.with(|armed| armed.set(true));
 
@@ -81,12 +81,29 @@ impl TelemetryTestEnv {
         std::env::set_var(key, value);
     }
 
+    /// Model an environment with NO usable stamp path: HOME unset (distroless,
+    /// scratch, Lambda custom runtimes). The stamp can never be consulted or
+    /// written, so only the in-memory cadence bounds delivery.
+    fn without_a_stamp_path(&self) {
+        *STAMP_PATH_OVERRIDE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(None);
+    }
+
     /// Reopen the gate without touching the 7-day stamp or the accumulated
     /// backoff — the state a process reaches once the guard interval has
     /// elapsed. Not a full reset: erasing the failure counter here would make
-    /// consecutive failures look like a first failure every time.
+    /// consecutive failures look like a first failure every time, and erasing
+    /// the delivery record would hide the in-memory 7-day cadence entirely.
     fn advance_past_the_guard(&self) {
         reopen_gate_for_tests();
+    }
+
+    /// A week later: the short guard has elapsed AND the last delivery is
+    /// older than the heartbeat interval.
+    fn advance_past_the_heartbeat_interval(&self) {
+        cross_the_heartbeat_interval_for_tests();
+        let _ = std::fs::remove_file(&self.stamp_path);
     }
 
     fn stamp_exists(&self) -> bool {
@@ -757,6 +774,31 @@ async fn probe_makes_exactly_one_request_per_heartbeat() {
         1,
         "every relayed dimension must ride ONE /health response; saw {seen:?}"
     );
+
+    // The probe must be attributable in the caller's own access log. Asserted
+    // here rather than left to the builder's doc comment, which was the only
+    // thing holding it.
+    let requests = server.received_requests().await.unwrap_or_default();
+    let ua = requests[0]
+        .headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        ua.starts_with("axonflow-sdk-rust/"),
+        "the /health probe must identify itself; User-Agent was {ua:?}"
+    );
+
+    // And it must carry NOTHING else by default — the SDK's Authorization and
+    // X-License-Key live on the client.rs transports and must never reach a
+    // probe of an endpoint the caller did not authenticate to.
+    for forbidden in ["authorization", "x-license-key", "x-client-id"] {
+        assert!(
+            requests[0].headers.get(forbidden).is_none(),
+            "the probe must not send {forbidden}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1342,6 +1384,48 @@ async fn a_fresh_seven_day_stamp_suppresses_the_ping() {
 }
 
 #[tokio::test]
+async fn a_stampless_environment_still_honours_the_seven_day_cadence() {
+    // THE regression this floor exists for. Where no stamp can be persisted —
+    // HOME unset, or a read-only root filesystem — `stamp_is_fresh` is false
+    // forever, so nothing but the in-memory record stops a SUCCESSFUL ping
+    // recurring every guard interval. That would be 168x the "at most one ping
+    // per machine every 7 days" this SDK discloses.
+    //
+    // Before 0.10.0 the `Once` gate bounded it at one ping per process;
+    // replacing `Once` with the 1-hour guard removed that bound, and the
+    // failure backoff cannot restore it because these attempts SUCCEED.
+    let env = TelemetryTestEnv::on();
+    env.without_a_stamp_path();
+
+    let server = MockServer::start().await;
+    mount_health_json(&server, serde_json::json!({"tier": "Community"})).await;
+    mount_checkpoint(&server, 200).await;
+    env.set("AXONFLOW_CHECKPOINT_URL", &checkpoint_url(&server));
+
+    // Three guard intervals' worth of opportunity. `advance_past_the_guard`
+    // reopens the short guard only — it does not erase the delivery record,
+    // which is exactly the state a long-running process reaches hour by hour.
+    assert!(heartbeat_pass_for_tests(&server.uri(), &Mode::Production).await);
+    for _ in 0..2 {
+        env.advance_past_the_guard();
+        heartbeat_pass_for_tests(&server.uri(), &Mode::Production).await;
+    }
+
+    let seen = seen(&server).await;
+    assert_eq!(
+        count_pings(&seen),
+        1,
+        "a machine with no usable stamp file must still ping at most once per 7 days, \
+         not once per guard interval; saw {seen:?}"
+    );
+    assert_eq!(
+        count_health(&seen),
+        1,
+        "and it must not probe the customer's own platform on every reopened guard"
+    );
+}
+
+#[tokio::test]
 async fn the_stamp_moves_only_on_delivery() {
     let env = TelemetryTestEnv::on();
 
@@ -1514,9 +1598,10 @@ async fn a_request_re_triggers_the_heartbeat_after_the_guard_expires() {
             .expect("client");
     await_ping(&server, 1).await;
 
-    // An hour later, with the 7-day stamp cleared (the boundary crossing).
-    env.advance_past_the_guard();
-    let _ = std::fs::remove_file(&env.stamp_path);
+    // A week later: the boundary this trigger site exists to catch. Both the
+    // stamp and the in-memory delivery record have to age, or the cadence
+    // floor refuses the claim.
+    env.advance_past_the_heartbeat_interval();
 
     client.list_connectors().await.expect("connectors call");
     await_ping(&server, 2).await;
@@ -1674,10 +1759,15 @@ fn shipped_sources() -> Vec<(String, String)> {
     out
 }
 
-/// Source with ALL whitespace removed, so a guard cannot be dodged by writing
-/// `. send()` or splitting a call across lines.
+/// Source normalised for the guards below: all whitespace removed, so a call
+/// cannot hide behind `. send()` or a line break, and angle brackets removed,
+/// so the qualified-path family collapses onto the plain one —
+/// `<reqwest::Client>::execute(` normalises to `reqwest::Client::execute(`.
+/// Both forms were used to evade earlier versions of these guards.
 fn squashed(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
+    src.chars()
+        .filter(|c| !c.is_whitespace() && *c != '<' && *c != '>')
+        .collect()
 }
 
 /// The heartbeat gate is only consulted on requests that go through
@@ -1689,9 +1779,19 @@ fn squashed(src: &str) -> String {
 /// The axis is: **every way `reqwest` can issue a request**, not the spelling
 /// `.send()`. An earlier version of this guard counted only `.send()` and was
 /// evaded in review by `client.execute(req)` and by `. send()` with a space —
-/// a guard that pinned the convention rather than the property. The token list
-/// below is the closed set of request-issuing entry points in `reqwest`'s
-/// public API, matched against whitespace-stripped source.
+/// a guard that pinned the convention rather than the property.
+///
+/// The token list below ENUMERATES reqwest's request-issuing entry points,
+/// matched against normalised source (see `squashed`) and an exact path. It is
+/// an enumeration, not a proof, and the honest limit is worth stating: folding
+/// away angle brackets covers the `<T>::method()` family, but an ALIAS still
+/// escapes — `use reqwest::Client as C; C::execute(..)` matches nothing here.
+/// The durable fix is a private newtype owning both `reqwest::Client`s whose
+/// only method is `dispatch`, so no client handle is reachable to call
+/// anything else on and visibility enforces the property instead of grep.
+/// Deferred rather than dropped: it rewrites every call site in `client.rs`,
+/// which another lane is editing concurrently, and every real site is
+/// funnelled today. Tracked on #88.
 #[test]
 fn no_http_send_outside_the_dispatch_funnel() {
     // Every reqwest API that actually puts a request on the wire, in both
@@ -1724,7 +1824,9 @@ fn no_http_send_outside_the_dispatch_funnel() {
             issued, expected,
             "{file} issues {issued} HTTP request(s), expected {expected}. Every SDK request must \
              go through `AxonFlowClient::dispatch` so the heartbeat gate is consulted; the \
-             telemetry path is the deliberate exception and builds its own client."
+             telemetry path is the deliberate exception and builds its own client. Note the \
+             match is over raw source with whitespace stripped, so an occurrence inside a \
+             comment, doc comment or string literal counts too."
         );
     }
 }

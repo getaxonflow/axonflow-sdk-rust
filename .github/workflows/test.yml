@@ -59,8 +59,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # A green suite proves the code does what the tests say today; it does not
-    # prove the tests would notice if it stopped. This plants seven defects in
-    # the heartbeat one at a time and requires the named test to go red.
+    # prove the tests would notice if it stopped. This plants defects in the
+    # heartbeat and the dispatch funnel one at a time and requires the named
+    # test to go red.
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
