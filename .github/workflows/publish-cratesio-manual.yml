@@ -1,0 +1,45 @@
+name: Publish to crates.io (manual re-run)
+
+# Exists for exactly one situation: the tag-triggered release created the GitHub
+# release but the crates.io publish failed for a reason since fixed on main
+# (release.yml's own comment names this remediation). The tag's tree is what
+# gets published - this workflow only supplies a corrected publish command and
+# the repo secret; it cannot change what ships.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish (e.g. v0.9.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag }}
+      - name: Assert the tag's version matches the tag
+        run: |
+          set -euo pipefail
+          WANT="${{ github.event.inputs.tag }}"; WANT="${WANT#v}"
+          GOT=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          [ "$GOT" = "$WANT" ] || { echo "::error::Cargo.toml version $GOT != tag $WANT"; exit 1; }
+      - name: cargo publish (scoped)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p axonflow-sdk-rust
+      - name: Verify version is live on crates.io
+        run: |
+          set -euo pipefail
+          V="${{ github.event.inputs.tag }}"; V="${V#v}"
+          for i in $(seq 1 30); do
+            if curl -fsSL "https://crates.io/api/v1/crates/axonflow-sdk-rust/$V" | grep -q '"num"'; then
+              echo "live: $V"; exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::$V not visible on crates.io after ~7.5 minutes"; exit 1
