@@ -16,6 +16,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // stack, so default to the caller's own tenant (== client_id) instead
     // of a made-up one that trips the tenant FK.
     let tenant_id = std::env::var("AXONFLOW_TENANT_ID").unwrap_or_else(|_| client_id.clone());
+    // The Redis connector connects FROM the platform (orchestrator), not from
+    // this process. On the docker-compose stack the Redis service is reachable
+    // as "redis"; override for other topologies.
+    let redis_host = std::env::var("AXONFLOW_REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
+    let redis_port: u16 = std::env::var("AXONFLOW_REDIS_PORT")
+        .unwrap_or_else(|_| "6379".to_string())
+        .parse()
+        .expect("AXONFLOW_REDIS_PORT must be a number");
+
+    let mut failed = false;
+    // Community-edition stacks run connectors from config files and have no
+    // DB persistence for marketplace installs, so the install→query arc is
+    // skipped there rather than failed.
+    let mut install_arc = true;
 
     // Initialize client
     println!("Initializing AxonFlow client...");
@@ -41,52 +55,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
     }
 
-    // Step 2: Install a Connector (Example: Amadeus)
+    // Step 2: Install a Connector. Redis ships with the docker-compose stack,
+    // so the install→query arc runs end-to-end with no external service or
+    // paid credentials. (Earlier revisions installed the Amadeus travel
+    // connector here; Amadeus decommissioned its self-service APIs on
+    // 2026-07-17, so an example pinned to it can never succeed again.)
     println!("{}", "=".repeat(60));
-    println!("Step 2: Install Amadeus Travel Connector");
+    println!("Step 2: Install Redis Connector");
     println!("{}", "=".repeat(60));
 
-    let amadeus_key = std::env::var("AMADEUS_API_KEY").ok();
-    let amadeus_secret = std::env::var("AMADEUS_API_SECRET").ok();
-    let amadeus_installed = connectors
+    let redis_installed = connectors
         .iter()
-        .any(|c| c.r#type == "amadeus" && c.installed);
+        .any(|c| c.r#type == "redis" && c.installed);
 
-    if amadeus_installed {
+    if redis_installed {
         // Keep the example re-runnable: the platform rejects duplicate
         // registrations, so don't re-install an already-installed connector.
-        println!("✓ Amadeus connector already installed - skipping install");
-    } else if let (Some(key), Some(secret)) = (amadeus_key, amadeus_secret) {
-        println!("Installing Amadeus connector...");
+        println!("✓ Redis connector already installed - skipping install");
+    } else {
+        println!(
+            "Installing Redis connector (host={} port={})...",
+            redis_host, redis_port
+        );
 
-        // Amadeus self-service keys are test-environment keys; production
-        // keys require an Amadeus production agreement. Default to "test"
-        // and let AMADEUS_ENVIRONMENT=production override.
-        let amadeus_env =
-            std::env::var("AMADEUS_ENVIRONMENT").unwrap_or_else(|_| "test".to_string());
         let mut options = HashMap::new();
-        options.insert("environment".to_string(), serde_json::json!(amadeus_env));
-
-        let mut credentials = HashMap::new();
-        credentials.insert("api_key".to_string(), key);
-        credentials.insert("api_secret".to_string(), secret);
+        options.insert("host".to_string(), serde_json::json!(redis_host));
+        options.insert("port".to_string(), serde_json::json!(redis_port));
 
         let install_req = ConnectorInstallRequest {
-            connector_id: "amadeus-travel".to_string(),
-            name: "amadeus-prod".to_string(),
+            connector_id: "redis-cache".to_string(),
+            name: "redis-cache".to_string(),
             tenant_id: tenant_id.clone(),
             options,
-            credentials,
+            credentials: HashMap::new(),
         };
 
         match client.install_connector(install_req).await {
             Ok(_) => println!("✓ Connector installed successfully!"),
-            Err(e) => println!("Failed to install connector: {}", e),
+            Err(e) if e.to_string().contains("Failed to persist connector config") => {
+                println!("⚠ This stack cannot persist connector installs (community edition");
+                println!("  runs connectors from config files) - skipping the install/query arc");
+                install_arc = false;
+            }
+            Err(e) => {
+                println!("⚠ Failed to install connector: {}", e);
+                failed = true;
+            }
         }
-    } else {
-        println!(
-            "⚠ Skipping connector installation (AMADEUS_API_KEY and AMADEUS_API_SECRET not set)"
-        );
     }
 
     // Step 3: Query Connector
@@ -94,9 +109,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Step 3: Query Connector");
     println!("{}", "=".repeat(60));
 
-    // Query Redis (if available). The Redis connector takes the operation
-    // as the query statement (GET / EXISTS / TTL / KEYS / STATS) with the
-    // key in params - it does not parse natural language.
+    if !install_arc {
+        println!("Skipped (connector install is not available on this stack).");
+        println!("\n✅ Connector examples completed (listing only on this edition)");
+        return Ok(());
+    }
+
+    // The Redis connector takes the operation as the query statement
+    // (GET / EXISTS / TTL / KEYS / STATS) with the key in params - it does
+    // not parse natural language.
     println!("Querying Redis connector...");
     let mut params = HashMap::new();
     params.insert("key".to_string(), serde_json::json!("user:123:preferences"));
@@ -111,10 +132,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("✓ Redis data retrieved: {:?}", r.data);
             } else {
                 println!("⚠ Query failed: {}", r.error.unwrap_or_default());
+                failed = true;
             }
         }
-        Err(e) => println!("⚠ Redis query failed (expected if not installed): {}", e),
+        Err(e) => {
+            println!("⚠ Redis query failed: {}", e);
+            failed = true;
+        }
     }
+
+    if failed {
+        println!("\n⚠ Connector examples completed with failures");
+        std::process::exit(1);
+    }
+    println!("\n✅ Connector examples completed");
 
     Ok(())
 }
