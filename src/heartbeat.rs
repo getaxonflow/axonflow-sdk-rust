@@ -971,6 +971,21 @@ fn reopen_gate_for_tests() {
     inner.in_flight = false;
 }
 
+/// Put the gate into a specific state so a test can ask it to REFUSE.
+///
+/// Needed because the widened interval is only observable at the moment a
+/// claim is declined, and no test can wait an hour. Without it the backoff was
+/// pinned only by a test of the pure interval function and a test that read
+/// the counter — so substituting the call site with the base interval left the
+/// whole suite green while the hourly-probe-forever defect came back.
+#[cfg(test)]
+fn set_gate_state_for_tests(last_checked_ago: Duration, consecutive_failures: u32) {
+    let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
+    inner.last_checked = Instant::now().checked_sub(last_checked_ago);
+    inner.in_flight = false;
+    inner.consecutive_failures = consecutive_failures;
+}
+
 #[cfg(test)]
 fn consecutive_failures_for_tests() -> u32 {
     gate()

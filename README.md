@@ -254,7 +254,7 @@ Four values are read from that one response and relayed onto the ping: the platf
 
 **A failure here never costs you the ping or the request.** The probe has its own capped share of a single 3-second budget covering the whole telemetry path, so an unreachable or slow `/health` cannot delay *your* call, cost you the ping, stack timeouts, or surface an error to your code. It can delay the ping itself by up to that capped share, on the background task.
 
-`AXONFLOW_TELEMETRY=off` suppresses the `/health` probe together with the rest of the heartbeat — with it set, the SDK makes no telemetry request of any kind, including to your own platform.
+If the checkpoint service cannot be reached at all — an air-gapped or egress-restricted deployment — repeated failures widen the retry interval rather than retrying hourly forever. That backoff is per process, so a fleet of short-lived processes still attempts once per process start; `AXONFLOW_TELEMETRY=off` is the way to stop it entirely.\n\n`AXONFLOW_TELEMETRY=off` suppresses the `/health` probe together with the rest of the heartbeat — with it set, the SDK makes no telemetry request of any kind, including to your own platform.
 
 ### Scope of `AXONFLOW_TELEMETRY=off`
 

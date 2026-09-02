@@ -43,7 +43,13 @@ restore_files() {
   done
 }
 
+# Idempotent: `trap ... EXIT INT TERM` fires twice on Ctrl-C (once for INT,
+# once for the EXIT it triggers), and the second run would try to copy from a
+# directory the first one deleted.
+_restored=0
 restore() {
+  [ "$_restored" -eq 1 ] && return 0
+  _restored=1
   restore_files
   rm -rf "$BACKUP_DIR"
 }
@@ -219,6 +225,19 @@ mutant "failure backoff removed" \
         .min(HEARTBEAT_INTERVAL)' \
   '    let _ = consecutive_failures;
     HEARTBEAT_GUARD_INTERVAL'
+
+# ---------------------------------------------------------------------------
+# 10b. The backoff exists but is not CONSULTED. Mutant 10 changes the interval
+#      function's body; this one leaves the function perfect and substitutes
+#      the base interval at the only call site. Before the call-site test this
+#      one-token edit left all 58 heartbeat tests green while restoring the
+#      hourly-probe-forever defect - testing the predicate is not testing the
+#      call site.
+# ---------------------------------------------------------------------------
+mutant "backoff computed but not consulted at the call site" \
+  "heartbeat::tests::the_widened_interval_actually_refuses_a_claim_at_the_call_site" \
+  '        if last.elapsed() < guard_interval_for(inner.consecutive_failures) {' \
+  '        if last.elapsed() < HEARTBEAT_GUARD_INTERVAL {'
 
 # ---------------------------------------------------------------------------
 # 11 + 12. The two source-scanning guards, attacked the way an earlier version

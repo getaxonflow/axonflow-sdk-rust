@@ -28,11 +28,10 @@ use std::process::Command;
 
 fn main() {
     // Re-run when the script itself changes, and when cargo points us at a
-    // different compiler. Neither covers "same RUSTC path, upgraded in place",
-    // so a stale value is possible after an in-place toolchain upgrade without
-    // a clean build. That is a staleness bound on an analytics dimension, not
-    // a correctness bug, and the alternative (rerun-if-changed on the rustc
-    // binary) breaks reproducible builds in sandboxed environments.
+    // different compiler. Cargo additionally fingerprints the rustc verbose
+    // version and rebuilds the whole crate when it changes, so an in-place
+    // toolchain upgrade re-runs this script too — the captured value tracks
+    // the compiler that actually built the crate.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=RUSTC");
 

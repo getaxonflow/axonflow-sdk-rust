@@ -1179,6 +1179,33 @@ fn the_guard_interval_widens_after_consecutive_failures() {
     assert_eq!(guard_interval_for(u32::MAX), HEARTBEAT_INTERVAL);
 }
 
+#[test]
+fn the_widened_interval_actually_refuses_a_claim_at_the_call_site() {
+    // THE test for the backoff. The two tests beside it check the pure
+    // interval function and the failure counter; neither ever asks the gate to
+    // decline a claim BECAUSE the interval widened, so substituting
+    // `guard_interval_for(..)` with the base interval at the call site left
+    // the entire suite green and silently restored the hourly-probe-forever
+    // defect. Pinned here, and planted as its own mutant.
+    let _env = TelemetryTestEnv::on();
+    let just_past_the_base = HEARTBEAT_GUARD_INTERVAL + Duration::from_secs(1);
+
+    // One failure recorded: the interval has doubled, so this instant is still
+    // inside it and the claim must be refused.
+    set_gate_state_for_tests(just_past_the_base, 1);
+    assert!(
+        claim_gate_slot().is_none(),
+        "after a failed attempt the gate must wait longer than the base interval"
+    );
+
+    // Same instant, clean history: allowed.
+    set_gate_state_for_tests(just_past_the_base, 0);
+    assert!(
+        claim_gate_slot().is_some(),
+        "with no failures the base interval must still let a claim through"
+    );
+}
+
 #[tokio::test]
 async fn a_failed_attempt_backs_off_and_a_delivery_resets_it() {
     let env = TelemetryTestEnv::on();
@@ -1667,10 +1694,15 @@ fn squashed(src: &str) -> String {
 /// public API, matched against whitespace-stripped source.
 #[test]
 fn no_http_send_outside_the_dispatch_funnel() {
-    // Every reqwest API that actually puts a request on the wire.
+    // Every reqwest API that actually puts a request on the wire, in both
+    // method and fully-qualified form. `Client::execute(` is listed separately
+    // from `.execute(` because UFCS
+    // (`reqwest::Client::execute(&self.http_client, req)`) has no leading dot
+    // and slipped past an earlier version of this list.
     const ISSUING_TOKENS: &[&str] = &[
         ".send()",
         ".execute(",
+        "Client::execute(",
         "reqwest::get(",
         "RequestBuilder::send(",
     ];
@@ -1681,9 +1713,9 @@ fn no_http_send_outside_the_dispatch_funnel() {
             .iter()
             .map(|t| squashed.matches(t).count())
             .sum();
-        let expected = if file.ends_with("client.rs") {
+        let expected = if file == "src/client.rs" {
             1 // AxonFlowClient::dispatch
-        } else if file.ends_with("heartbeat.rs") {
+        } else if file == "src/heartbeat.rs" {
             2 // the /health GET and the checkpoint POST, on the telemetry client
         } else {
             0
@@ -1715,6 +1747,9 @@ fn the_telemetry_path_builds_exactly_one_http_client() {
         "Client::builder()",
         "ClientBuilder::new()",
         "reqwest::Client::new()",
+        // `reqwest::Client: Default`, so this is a fourth way to get one.
+        "reqwest::Client::default()",
+        "Client::default()",
     ];
 
     for (file, src) in shipped_sources() {
@@ -1724,9 +1759,9 @@ fn the_telemetry_path_builds_exactly_one_http_client() {
             .map(|t| squashed.matches(t).count())
             .sum();
 
-        let expected = if file.ends_with("client.rs") {
+        let expected = if file == "src/client.rs" {
             2 // http_client + map_http_client
-        } else if file.ends_with("heartbeat.rs") {
+        } else if file == "src/heartbeat.rs" {
             1 // ONE client shared by the probe and the POST, carrying the split deadline
         } else {
             0

@@ -28,7 +28,10 @@ keywords = ["ai", "governance", "llm", "sdk"]
 # `testdata/authzen-surface.json` is deliberately NOT excluded: it is the input
 # the committed types were generated from, and a consumer auditing the SDK
 # should be able to regenerate them from what the crate ships.
-exclude = ["tools/**"]
+# `.cargo/config.toml` turns the SDK's own telemetry off for everything cargo
+# runs in this repository. It is developer tooling and must not ship in the
+# published crate, where it would silently disable a consumer's telemetry.
+exclude = ["tools/**", ".cargo/**"]
 categories = ["api-bindings", "web-programming::http-client"]
 
 [dependencies]
