@@ -1,0 +1,21 @@
+# The SDK's own heartbeat is OFF for everything cargo runs in this repository.
+#
+# The crate's unit-test binary already has an internal `cfg(test)` arm, but
+# `tests/` integration tests link the library built WITHOUT `cfg(test)`, so an
+# ordinary integration test that points a client at a mock server would probe
+# that mock's `/health` and POST a live ping to the production checkpoint
+# service on any machine that had not set this by hand. CI is currently
+# protected only by a workflow-level environment variable, which is one
+# deleted line away from a live-fire test suite.
+#
+# `force` is left at its default (false), so a value exported in the shell
+# still wins: `AXONFLOW_TELEMETRY=on cargo run --example basic` is how you
+# observe a real ping from this repository. Note that `cargo run` is covered
+# too, so an example run from here sends nothing unless you export it.
+#
+# The runtime-e2e helper does NOT rely on that: it calls
+# `std::env::remove_var("AXONFLOW_TELEMETRY")` in-process at startup
+# (`runtime-e2e/3660_health_relay_telemetry/helper/src/main.rs`), which is
+# load bearing - delete that line and the suite stops proving anything.
+[env]
+AXONFLOW_TELEMETRY = "off"

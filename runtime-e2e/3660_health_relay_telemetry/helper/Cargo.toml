@@ -1,0 +1,15 @@
+[package]
+name = "health-relay-telemetry-helper"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axonflow-sdk-rust = { path = "../../.." }
+tokio = { version = "1.52", features = ["full"] }
+serde_json = "1"
+dirs = "5"
+
+[[bin]]
+name = "health-relay-telemetry-helper"
+path = "src/main.rs"

@@ -54,6 +54,33 @@ jobs:
     # be re-added once axonflow-sdk-rust#8 establishes an explicit
     # rust-version in Cargo.toml.
 
+  mutation:
+    name: Mutation gate (telemetry)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A green suite proves the code does what the tests say today; it does not
+    # prove the tests would notice if it stopped. This plants defects in the
+    # heartbeat and the dispatch funnel one at a time and requires the named
+    # test to go red.
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/mutation-gate.sh
+
+  telemetry-relay:
+    name: Telemetry /health relay (runtime-e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Drives the real client against a real listener answering both /health and
+    # /v1/ping, and asserts on the bytes that reached the wire. Self-contained
+    # (no platform stack), so it runs on every PR rather than only on demand.
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./runtime-e2e/3660_health_relay_telemetry/test.sh
+
   examples:
     name: Build Examples
     runs-on: ubuntu-latest

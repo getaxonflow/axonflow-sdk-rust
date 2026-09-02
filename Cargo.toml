@@ -28,7 +28,10 @@ keywords = ["ai", "governance", "llm", "sdk"]
 # `testdata/authzen-surface.json` is deliberately NOT excluded: it is the input
 # the committed types were generated from, and a consumer auditing the SDK
 # should be able to regenerate them from what the crate ships.
-exclude = ["tools/**"]
+# `.cargo/config.toml` turns the SDK's own telemetry off for everything cargo
+# runs in this repository. It is developer tooling and must not ship in the
+# published crate, where it would silently disable a consumer's telemetry.
+exclude = ["tools/**", ".cargo/**"]
 categories = ["api-bindings", "web-programming::http-client"]
 
 [dependencies]
@@ -53,6 +56,10 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3.10"
+# Captures `tracing` output so the heartbeat tests can assert on what the
+# SDK told the operator about a failed /health probe — and on what it did
+# NOT tell them (the relayed value itself is remote-controlled text).
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Path-only, so it is stripped from the published manifest. It exists so the
 # check that the committed generated file is current runs inside `cargo test`
 # rather than in a workflow step somebody can forget to add.

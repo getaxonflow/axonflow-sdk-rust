@@ -253,7 +253,9 @@ impl AxonFlowClient {
             "{}/api/v1/connectors/{}/install",
             self.config.endpoint, encoded_id
         );
-        let resp = self.http_client.post(&url).json(&req).send().await?;
+        let resp = self
+            .dispatch(self.http_client.post(&url).json(&req))
+            .await?;
         Self::check_status(resp).await?;
         Ok(())
     }
@@ -378,10 +380,7 @@ impl AxonFlowClient {
         let encoded_id = utf8_percent_encode(plan_id, PATH_SEGMENT);
         let url = format!("{}/api/v1/plan/{}/cancel", self.config.endpoint, encoded_id);
         let resp = self
-            .map_http_client
-            .post(&url)
-            .json(&req_body)
-            .send()
+            .dispatch(self.map_http_client.post(&url).json(&req_body))
             .await?;
         let resp = Self::check_status(resp).await?;
         Ok(resp.json().await?)
@@ -401,7 +400,9 @@ impl AxonFlowClient {
         }
 
         let url = format!("{}/api/audit/llm-call", self.config.endpoint);
-        let resp = self.http_client.post(&url).json(&req_body).send().await?;
+        let resp = self
+            .dispatch(self.http_client.post(&url).json(&req_body))
+            .await?;
 
         let status = resp.status();
         let body = resp.text().await?;
@@ -456,8 +457,35 @@ impl AxonFlowClient {
         &self.config.endpoint
     }
 
+    /// The single site every SDK HTTP request passes through.
+    ///
+    /// This is the Rust equivalent of the Go SDK's `doHttpRequest` middleware
+    /// (`heartbeat.go:257`): one interception point in the HTTP layer rather
+    /// than a `maybe_send_heartbeat` sprinkled per method. Consulting the gate
+    /// here is what keeps a long-running service visible to telemetry — before
+    /// 0.10.0 the constructor was the only trigger, so a service that crossed
+    /// the 7-day boundary never pinged again.
+    ///
+    /// The user's request is never delayed by it: `maybe_send_heartbeat`
+    /// returns after one mutex acquire on the suppressed path (the case on all
+    /// but at most one request per hour), and does every blocking and network
+    /// step on a spawned task.
+    ///
+    /// **`heartbeat.rs` must not route through here.** That module builds its
+    /// own [`reqwest::Client`], which is precisely what stops the telemetry
+    /// path — including its `/health` probe — from re-entering this gate.
+    /// `no_http_send_outside_the_dispatch_funnel` fails the build if a new
+    /// call site bypasses this function.
+    async fn dispatch(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        maybe_send_heartbeat(&self.config.endpoint, &self.config.mode);
+        req.send().await
+    }
+
     pub(crate) async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self.http_client.get(url).send().await?;
+        let resp = self.dispatch(self.http_client.get(url)).await?;
         Self::check_status(resp).await
     }
 
@@ -472,7 +500,7 @@ impl AxonFlowClient {
         url: &str,
         body: &T,
     ) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self.http_client.post(url).json(body).send().await?;
+        let resp = self.dispatch(self.http_client.post(url).json(body)).await?;
         Self::check_status(resp).await
     }
 
@@ -482,7 +510,7 @@ impl AxonFlowClient {
     /// [`AxonFlowError::RateLimited`]) before falling back to the generic
     /// error path.
     pub(crate) async fn raw_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        Ok(self.http_client.get(url).send().await?)
+        Ok(self.dispatch(self.http_client.get(url)).await?)
     }
 
     /// Crate-internal POST of an already-encoded body with per-request headers,
@@ -514,11 +542,11 @@ impl AxonFlowClient {
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
-        Ok(request.send().await?)
+        Ok(self.dispatch(request).await?)
     }
 
     async fn checked_map_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self.map_http_client.get(url).send().await?;
+        let resp = self.dispatch(self.map_http_client.get(url)).await?;
         Self::check_status(resp).await
     }
 
@@ -612,7 +640,7 @@ impl AxonFlowClient {
 
     async fn execute_request(&self, req: &ClientRequest) -> Result<ClientResponse, AxonFlowError> {
         let url = format!("{}/api/request", self.config.endpoint);
-        let resp = self.http_client.post(&url).json(req).send().await?;
+        let resp = self.dispatch(self.http_client.post(&url).json(req)).await?;
 
         let status = resp.status();
         let body = resp.text().await?;
