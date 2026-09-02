@@ -25,7 +25,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TARGET_FILE="src/heartbeat.rs"
-BACKUP="$(mktemp -t heartbeat-mutation-backup)"
+# An explicit XXXXXX template rather than `mktemp -t <prefix>`: BSD mktemp
+# (macOS) reads -t as a prefix, GNU mktemp (CI) reads it as a template and
+# refuses one with "too few X's". This form is correct on both.
+BACKUP="$(mktemp "${TMPDIR:-/tmp}/heartbeat-mutation-backup.XXXXXX")"
 cp "$TARGET_FILE" "$BACKUP"
 
 restore() {
