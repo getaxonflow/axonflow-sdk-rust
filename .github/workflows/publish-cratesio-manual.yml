@@ -37,7 +37,7 @@ jobs:
           set -euo pipefail
           V="${{ github.event.inputs.tag }}"; V="${V#v}"
           for i in $(seq 1 30); do
-            if curl -fsSL "https://crates.io/api/v1/crates/axonflow-sdk-rust/$V" | grep -q '"num"'; then
+            if curl -fsSL -A "axonflow-release-verify (engineering@getaxonflow.com)" "https://crates.io/api/v1/crates/axonflow-sdk-rust/$V" | grep -q '"num"'; then
               echo "live: $V"; exit 0
             fi
             sleep 15
