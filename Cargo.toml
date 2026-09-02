@@ -53,6 +53,10 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3.10"
+# Captures `tracing` output so the heartbeat tests can assert on what the
+# SDK told the operator about a failed /health probe — and on what it did
+# NOT tell them (the relayed value itself is remote-controlled text).
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Path-only, so it is stripped from the published manifest. It exists so the
 # check that the committed generated file is current runs inside `cargo test`
 # rather than in a workflow step somebody can forget to add.

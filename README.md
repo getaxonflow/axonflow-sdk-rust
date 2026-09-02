@@ -232,9 +232,29 @@ let config = AxonFlowConfig {
 
 ## Telemetry
 
-The SDK includes a non-blocking background heartbeat that follows the AxonFlow telemetry contract: **at most one ping per machine every 7 days** to `https://checkpoint.getaxonflow.com/v1/ping`. Payload is classification-only — SDK version, OS, architecture, runtime version, deployment mode, an endpoint-type bucket (`localhost` / `private_network` / `remote` / `unknown`), and the deployment's `org_id` (the `ORG_ID` env value, or `local-dev-org` sentinel when unset). The raw URL is never sent.
+The SDK includes a non-blocking background heartbeat that follows the AxonFlow telemetry contract: **at most one ping per machine every 7 days** to `https://checkpoint.getaxonflow.com/v1/ping`. Payload is classification-only — SDK version, OS, architecture, Rust toolchain version, deployment mode, an endpoint-type bucket (`localhost` / `private_network` / `remote` / `unknown`), and the deployment's `org_id` (the `ORG_ID` env value, or the `local-dev-org` sentinel when unset; on Community SaaS it is the `cs_<uuid>` tenant identifier). The raw URL of your endpoint is never sent — only the bucket it falls into.
+
+The gate is evaluated when a client is constructed and again on each SDK request, so a long-running service stays visible across the 7-day boundary. Evaluating it costs one in-process check; the `/health` probe and the ping run on a background task and never delay your call.
 
 `AXONFLOW_TELEMETRY=off` is the **sole opt-out lever** as of v0.2. There is no programmatic disable on the SDK config — the env-var-only pattern matches HashiCorp's `CHECKPOINT_DISABLE`, Docker, and Datadog Agent. Sandbox-mode clients (constructed via `AxonFlowConfig::sandbox(...)`) tag their pings with `stream="sandbox"` so analytics can distinguish dev/test usage from production heartbeat. `DO_NOT_TRACK` is intentionally not honored.
+
+### The heartbeat contacts your platform's `/health` (new in 0.10.0)
+
+**This is a change to the SDK's network behaviour.** Before 0.10.0 the telemetry path made exactly one outbound request, to the checkpoint service. It now makes one more, first: a `GET` on your configured platform endpoint's `/health`. That endpoint is your own platform, it is unauthenticated, and it is one the SDK was already configured to talk to — but the request is new, so it is called out here rather than left to be discovered.
+
+Four values are read from that one response and relayed onto the ping: the platform's version, its licence tier, its edition, and its own deployment mode. This brings the Rust SDK to parity with the Go, Python, TypeScript and Java SDKs, which already read the same response. There is exactly one `/health` fetch per heartbeat; every relayed value rides it.
+
+**What is and is not collected.** Collected: the coarse strings `/health` returned, exactly as it returned them. **Not collected: your licence key, its expiry, its seat or node count, your organisation's name, your endpoint URL, or any other licence or deployment detail.** The SDK never reads your licence key, and it sends nothing else from the `/health` response.
+
+**This is an adoption-analytics signal, not an entitlement one.** The values are whatever the platform at your configured endpoint reported about itself, relayed unchanged: the SDK derives nothing and verifies nothing, and the receiver cannot verify the relay either. Whoever operates that endpoint controls them completely, so they must never gate entitlement, unlock a feature, or enter any authorization or billing decision.
+
+**Absent means unknown, never a guess.** Each field is omitted from the ping entirely whenever it could not be determined — your platform is unreachable, returns an error, returns an unparseable or oversized body, or returns no such field. It is never defaulted to a substituted value, so an omitted field means "not known" and never implies a particular tier or edition. A platform released before these fields existed simply omits them, which is the same case. A value longer than 64 bytes is dropped whole rather than truncated, since a truncated string would be a claim your platform never made.
+
+**Transient values are reported as-is.** A platform that is still starting reports `starting`, and the SDK forwards that unchanged rather than filtering it.
+
+**A failure here never costs you the ping or the request.** The probe has its own capped share of a single 3-second budget covering the whole telemetry path, so an unreachable or slow `/health` cannot delay the ping, stack timeouts, or surface an error to your code.
+
+`AXONFLOW_TELEMETRY=off` suppresses the `/health` probe together with the rest of the heartbeat — with it set, the SDK makes no telemetry request of any kind, including to your own platform.
 
 ### Scope of `AXONFLOW_TELEMETRY=off`
 
