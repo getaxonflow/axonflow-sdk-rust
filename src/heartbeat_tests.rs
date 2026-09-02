@@ -791,7 +791,14 @@ async fn ping_carries_every_relayed_field_when_health_answers() {
             "version": "10.4.0",
             "tier": "EnterprisePlus",
             "edition": "enterprise",
-            "deployment_mode": "self_hosted",
+            // DELIBERATELY not the value the SDK derives for this endpoint.
+            // The platform's own deployment mode and the SDK's topology
+            // classification are different questions that happen to share a
+            // vocabulary; a fixture where they agree cannot tell a correct
+            // relay from one that wrote the platform's answer over the SDK's
+            // field, which would corrupt every existing deployment-mode
+            // dashboard (flagged by the platform lane, enterprise#3660).
+            "deployment_mode": "community_saas",
         }),
     )
     .await;
@@ -804,11 +811,16 @@ async fn ping_carries_every_relayed_field_when_health_answers() {
     assert_eq!(body["platform_version"], "10.4.0");
     assert_eq!(body["license_tier"], "EnterprisePlus");
     assert_eq!(body["edition"], "enterprise");
-    assert_eq!(body["platform_deployment_mode"], "self_hosted");
+    assert_eq!(body["platform_deployment_mode"], "community_saas");
 
-    // The SDK's own endpoint classification is a DIFFERENT field and must not
-    // be overwritten by the platform's answer.
+    // The SDK's own endpoint classification is a DIFFERENT field and must
+    // survive untouched, still carrying what the SDK derived rather than what
+    // the platform reported.
     assert_eq!(body["deployment_mode"], DEPLOYMENT_MODE_SELF_HOSTED);
+    assert_ne!(
+        body["deployment_mode"], body["platform_deployment_mode"],
+        "the SDK's topology classification was overwritten by the platform's answer"
+    );
 
     // The pre-existing wire shape is unchanged.
     assert_eq!(body["telemetry_type"], "sdk");

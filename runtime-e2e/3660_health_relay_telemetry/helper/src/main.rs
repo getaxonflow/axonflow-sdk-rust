@@ -63,12 +63,18 @@ fn scenario(name: &str) -> Scenario {
         // The post-#3660 platform: every relay present.
         "full" => Scenario {
             name: "full",
+            // `deployment_mode` here is deliberately NOT what the SDK derives
+            // for a 127.0.0.1 endpoint (`self_hosted`): the platform's own
+            // deployment mode and the SDK's topology classification share a
+            // vocabulary but answer different questions, and a fixture where
+            // they agree cannot tell a correct relay from one that overwrote
+            // the SDK's field. The assertion below pins both.
             health_body: Some(
-                r#"{"status":"healthy","version":"10.4.0","tier":"Enterprise","edition":"enterprise","deployment_mode":"self_hosted"}"#
+                r#"{"status":"healthy","version":"10.4.0","tier":"Enterprise","edition":"enterprise","deployment_mode":"community_saas"}"#
                     .to_string(),
             ),
             health_status: 200,
-            expect_present: all_four("10.4.0", "Enterprise", "enterprise", "self_hosted"),
+            expect_present: all_four("10.4.0", "Enterprise", "enterprise", "community_saas"),
             expect_absent: vec![],
         },
         // Any platform released BEFORE #3660: tier and version only. The two
@@ -268,6 +274,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Shape that must hold in every scenario — a failed probe costs
     // dimensions, never the ping.
+    // The SDK's own topology classification, which the platform's answer must
+    // never overwrite. The listener is on 127.0.0.1, so this is always
+    // `self_hosted` regardless of what /health reported about itself.
+    if ping.get("deployment_mode").and_then(|v| v.as_str()) != Some("self_hosted") {
+        failures.push(format!(
+            "deployment_mode: the SDK's own classification must survive, got {:?}",
+            ping.get("deployment_mode")
+        ));
+    }
+
     for (key, want) in [
         ("telemetry_type", "sdk"),
         ("sdk", "rust"),

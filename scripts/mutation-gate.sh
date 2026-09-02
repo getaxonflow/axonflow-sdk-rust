@@ -10,8 +10,9 @@
 # Every mutant is a defect somebody could plausibly introduce: relaxing the
 # split deadline back to a per-leg timeout, letting an unlearned field reach
 # the wire as a null or a guess, dropping the length cap, dropping the 1-hour
-# guard, dropping the non-2xx check, or going back to a fabricated
-# runtime_version.
+# guard, dropping the non-2xx check, going back to a fabricated
+# runtime_version, or writing the platform's own deployment mode over the
+# SDK's topology classification.
 #
 # Usage:  ./scripts/mutation-gate.sh
 # Exit 0 only when the unmutated tree passes AND every mutant is killed.
@@ -155,6 +156,19 @@ mutant "runtime_version reverted to a fabricated literal" \
   "heartbeat::tests::runtime_version_is_the_real_toolchain_and_never_the_old_literal" \
   '    normalize_rustc_version(option_env!("AXONFLOW_RUSTC_VERSION"))' \
   '    "rustc-stable".to_string()'
+
+# ---------------------------------------------------------------------------
+# 8. The platform's own deployment mode is written over the SDK's topology
+#    classification. Both are called "deployment mode" and share a vocabulary,
+#    so the mistake looks harmless; it would corrupt every existing
+#    deployment-mode dashboard. Flagged by the platform lane (enterprise#3660).
+# ---------------------------------------------------------------------------
+mutant "platform deployment mode conflated with the SDK's own field" \
+  "heartbeat::tests::ping_carries_every_relayed_field_when_health_answers" \
+  '    #[serde(skip_serializing_if = "Option::is_none")]
+    platform_deployment_mode: Option<String>,' \
+  '    #[serde(rename = "deployment_mode", skip_serializing_if = "Option::is_none")]
+    platform_deployment_mode: Option<String>,'
 
 printf '\n=== mutation gate: %d killed, %d survived\n' "$pass" "$fail"
 if [ "$fail" -ne 0 ]; then
