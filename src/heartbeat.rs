@@ -121,6 +121,10 @@ const ENDPOINT_TYPE_UNKNOWN: &str = "unknown";
 struct GateInner {
     last_checked: Option<Instant>,
     in_flight: bool,
+    /// Consecutive undelivered attempts. Widens the re-check interval so a
+    /// deployment that can never reach the checkpoint service stops probing
+    /// its own platform every hour forever. Reset on delivery.
+    consecutive_failures: u32,
 }
 
 fn gate() -> &'static Mutex<GateInner> {
@@ -129,6 +133,7 @@ fn gate() -> &'static Mutex<GateInner> {
         Mutex::new(GateInner {
             last_checked: None,
             in_flight: false,
+            consecutive_failures: 0,
         })
     })
 }
@@ -141,9 +146,13 @@ struct GateSlot;
 
 impl Drop for GateSlot {
     fn drop(&mut self) {
-        if let Ok(mut inner) = gate().lock() {
-            inner.in_flight = false;
-        }
+        // Poisoning is recovered from, never swallowed. Dropping the release
+        // because some other caller panicked would pin `in_flight` true and
+        // silently disable telemetry for the rest of the process — a
+        // fail-CLOSED outcome from an error path that has nothing to do with
+        // telemetry.
+        let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
+        inner.in_flight = false;
     }
 }
 
@@ -159,12 +168,14 @@ impl Drop for GateSlot {
 ///
 /// Returns `None` when this call must not ping.
 fn claim_gate_slot() -> Option<GateSlot> {
-    let mut inner = gate().lock().ok()?;
+    // See `GateSlot::drop`: a poisoned mutex must not become a permanent
+    // telemetry outage.
+    let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
     if inner.in_flight {
         return None;
     }
     if let Some(last) = inner.last_checked {
-        if last.elapsed() < HEARTBEAT_GUARD_INTERVAL {
+        if last.elapsed() < guard_interval_for(inner.consecutive_failures) {
             return None;
         }
     }
@@ -175,6 +186,45 @@ fn claim_gate_slot() -> Option<GateSlot> {
     inner.last_checked = Some(Instant::now());
     inner.in_flight = true;
     Some(GateSlot)
+}
+
+/// How long the gate waits before re-consulting, given how many attempts in a
+/// row have failed to deliver.
+///
+/// Doubling from [`HEARTBEAT_GUARD_INTERVAL`], capped at
+/// [`HEARTBEAT_INTERVAL`]. Without this the SDK has no backoff at all, and
+/// two deliberate design choices combine into a defect: the 7-day stamp only
+/// advances on DELIVERY, and the gate is now re-evaluated on every request.
+/// In a deployment where egress to the checkpoint service is blocked — which
+/// is the normal state of the air-gapped and in-VPC self-hosted topologies
+/// this SDK supports — every process would issue a `/health` GET against the
+/// CUSTOMER'S OWN platform once an hour, indefinitely, and a failed POST
+/// beside it. Unsolicited hourly traffic against someone else's platform, for
+/// a heartbeat disclosed as weekly, is not defensible.
+///
+/// Backing off does not lose a ping: the stamp is still untouched, so the
+/// first attempt after the widened interval sends normally.
+fn guard_interval_for(consecutive_failures: u32) -> Duration {
+    // Clamped before shifting: the counter is unbounded, and shifting a u32
+    // by 32 or more panics in debug and is undefined in release. 16 doublings
+    // already exceeds the 7-day cap by orders of magnitude.
+    let doublings = consecutive_failures.min(16);
+    HEARTBEAT_GUARD_INTERVAL
+        .saturating_mul(1u32 << doublings)
+        .min(HEARTBEAT_INTERVAL)
+}
+
+/// Record what an attempt achieved, so the next one can back off.
+///
+/// Only called when an attempt was actually MADE. A pass that stopped at the
+/// fresh 7-day stamp is not a failure and must not widen the interval.
+fn record_attempt(delivered: bool) {
+    let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
+    if delivered {
+        inner.consecutive_failures = 0;
+    } else {
+        inner.consecutive_failures = inner.consecutive_failures.saturating_add(1);
+    }
 }
 
 /// Everything the heartbeat decides synchronously: the opt-out, the
@@ -247,7 +297,9 @@ async fn gated_send(ctx: HeartbeatContext, _slot: GateSlot) {
         _ => {}
     }
 
-    if send_heartbeat(&ctx).await {
+    let delivered = send_heartbeat(&ctx).await;
+    record_attempt(delivered);
+    if delivered {
         write_stamp(&ctx).await;
     }
 }
@@ -592,7 +644,10 @@ async fn probe_platform_health(
     endpoint: &str,
     budget: Duration,
 ) -> HealthProbe {
-    let endpoint = endpoint.trim_end_matches('/');
+    // `trim()` before the slash trim so a whitespace-only endpoint is treated
+    // as no endpoint and skipped, rather than building a request that can only
+    // die at URL parse.
+    let endpoint = endpoint.trim().trim_end_matches('/');
     if endpoint.is_empty() {
         return HealthProbe::default();
     }
@@ -759,6 +814,40 @@ impl HeartbeatContext {
     }
 }
 
+/// The ONE HTTP client the telemetry path uses, for both legs.
+///
+/// A function rather than an inline builder so the tests exercise the SHIPPED
+/// construction. When the probe tests built their own client they were testing
+/// the test helper: the redirect policy below was live in production and
+/// absent from every probe test, and the test written to prove redirects are
+/// refused passed a redirect straight through.
+///
+/// Deliberately built with no `.timeout(...)`: the budget is per-request, set
+/// from the shared deadline in [`send_heartbeat`].
+///
+/// Redirects are REFUSED, and that is load bearing on both legs. reqwest
+/// follows up to 10 by default, which would mean:
+///
+///   * `/health` is no longer one request, and the values relayed would be
+///     whatever answered at the redirect TARGET — so the disclosure's
+///     "whatever is answering at the endpoint you configured" would be false,
+///     and the endpoint's operator would choose who supplies them.
+///   * worse on the POST: reqwest re-issues a redirected POST as a bodyless
+///     GET, so a 302 on the checkpoint URL yields a 200 carrying NOTHING,
+///     `send_heartbeat` reports delivery, and the 7-day stamp advances on a
+///     ping that was never sent — telemetry then goes dark for a week.
+///
+/// A `User-Agent` is set because this is the first SDK feature that contacts
+/// the caller's own platform unsolicited; it must be attributable in their
+/// access logs. No other default header is set, so the SDK's `Authorization`
+/// and `X-License-Key` never reach the probe.
+fn telemetry_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("axonflow-sdk-rust/", env!("CARGO_PKG_VERSION")))
+        .build()
+}
+
 /// Run the telemetry path: probe `/health`, then POST the ping. Returns
 /// whether the ping was DELIVERED, which is what licenses the caller to move
 /// the 7-day stamp forward.
@@ -777,9 +866,7 @@ impl HeartbeatContext {
 async fn send_heartbeat(ctx: &HeartbeatContext) -> bool {
     let deadline = Instant::now() + HEARTBEAT_TIMEOUT;
 
-    // ONE client for both legs. Deliberately built with no `.timeout(...)`:
-    // the budget is per-request, set from the shared deadline below.
-    let client = match reqwest::Client::builder().build() {
+    let client = match telemetry_client() {
         Ok(c) => c,
         Err(e) => {
             debug!("Telemetry skipped: client build failed: {}", e);
@@ -861,11 +948,35 @@ async fn write_stamp(ctx: &HeartbeatContext) {
 /// state. Tests hold `telemetry_lock()` while doing this — the gate is
 /// process-wide by design, so two tests racing on it would see each other's
 /// claims.
+/// A fresh process: no prior check, nothing in flight, no accumulated
+/// backoff.
 #[cfg(test)]
 fn reset_gate_for_tests() {
     let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
     inner.last_checked = None;
     inner.in_flight = false;
+    inner.consecutive_failures = 0;
+}
+
+/// The guard interval has elapsed — and NOTHING else has changed.
+///
+/// Deliberately distinct from [`reset_gate_for_tests`]: clearing the failure
+/// counter here would mean "time passed" also erased the backoff, and the
+/// backoff test would then measure one failure over and over instead of
+/// consecutive ones.
+#[cfg(test)]
+fn reopen_gate_for_tests() {
+    let mut inner = gate().lock().unwrap_or_else(|e| e.into_inner());
+    inner.last_checked = None;
+    inner.in_flight = false;
+}
+
+#[cfg(test)]
+fn consecutive_failures_for_tests() -> u32 {
+    gate()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .consecutive_failures
 }
 
 /// One complete heartbeat pass, awaited rather than spawned.

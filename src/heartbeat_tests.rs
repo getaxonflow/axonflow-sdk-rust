@@ -81,10 +81,12 @@ impl TelemetryTestEnv {
         std::env::set_var(key, value);
     }
 
-    /// Reopen the gate without touching the 7-day stamp — the state a process
-    /// reaches an hour after its last check.
+    /// Reopen the gate without touching the 7-day stamp or the accumulated
+    /// backoff — the state a process reaches once the guard interval has
+    /// elapsed. Not a full reset: erasing the failure counter here would make
+    /// consecutive failures look like a first failure every time.
     fn advance_past_the_guard(&self) {
-        reset_gate_for_tests();
+        reopen_gate_for_tests();
     }
 
     fn stamp_exists(&self) -> bool {
@@ -582,10 +584,11 @@ fn learned_value_drops_an_over_long_value_whole_rather_than_truncating() {
 // 2. The probe
 // ============================================================================
 
-/// A client with no client-level timeout, matching how `send_heartbeat`
-/// builds the one it shares between both legs.
+/// The SHIPPED telemetry client, not a lookalike. Building one here instead
+/// is how the first version of `a_redirecting_health_endpoint_is_refused_not_followed`
+/// passed a redirect straight through: it tested the helper, not the code.
 fn probe_client() -> reqwest::Client {
-    reqwest::Client::builder().build().expect("client")
+    telemetry_client().expect("client")
 }
 
 #[tokio::test]
@@ -757,11 +760,20 @@ async fn probe_makes_exactly_one_request_per_heartbeat() {
 }
 
 #[tokio::test]
-async fn probe_skips_a_blank_endpoint_without_touching_the_network() {
-    for endpoint in ["", "/", "   "] {
+async fn probe_skips_a_blank_endpoint_without_attempting_a_request() {
+    // Asserting only the return value could not tell "skipped" from "attempted
+    // and failed" — both are the default probe. The log is what distinguishes
+    // them: an attempt that dies at URL parse emits a failure diagnostic.
+    let logs = LogCapture::arm();
+    for endpoint in ["", "/", "   ", "///"] {
         let probe = probe_platform_health(&probe_client(), endpoint, HEALTH_BUDGET_CAP).await;
         assert_eq!(probe, HealthProbe::default(), "endpoint {endpoint:?}");
     }
+    let captured = logs.contents();
+    assert!(
+        !captured.contains("/health probe failed"),
+        "a blank endpoint must be skipped, not attempted; logs:\n{captured}"
+    );
 }
 
 #[tokio::test]
@@ -1072,6 +1084,145 @@ async fn an_unreachable_checkpoint_reports_undelivered() {
 
 // ============================================================================
 // 4. The gate
+#[tokio::test]
+async fn a_redirecting_health_endpoint_is_refused_not_followed() {
+    // A `/health` that 302s elsewhere would otherwise make the SDK issue up to
+    // eleven requests instead of one, and relay values read from a host the
+    // caller never configured — which is precisely what the disclosure says
+    // does not happen.
+    let upstream = MockServer::start().await;
+    mount_health_json(
+        &upstream,
+        serde_json::json!({"version": "9.9.9", "tier": "LeakedFromElsewhere"}),
+    )
+    .await;
+
+    let front = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/health", upstream.uri()).as_str()),
+        )
+        .mount(&front)
+        .await;
+
+    let probe = probe_platform_health(&probe_client(), &front.uri(), HEALTH_BUDGET_CAP).await;
+
+    assert_eq!(
+        probe,
+        HealthProbe::default(),
+        "a redirect must teach the SDK nothing"
+    );
+    assert_eq!(
+        count_health(&seen(&upstream).await),
+        0,
+        "the redirect target must never be contacted"
+    );
+    assert_eq!(
+        count_health(&seen(&front).await),
+        1,
+        "the configured endpoint must be contacted exactly once"
+    );
+}
+
+#[tokio::test]
+async fn a_redirected_checkpoint_post_is_not_a_delivery() {
+    // reqwest re-issues a redirected POST as a BODYLESS GET. Following one
+    // would mean a 302 on the checkpoint URL yields a 200 carrying nothing,
+    // `send_heartbeat` reports success, and the 7-day stamp advances on a ping
+    // that was never sent — telemetry dark for a week.
+    let sink = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sink"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .mount(&sink)
+        .await;
+
+    let server = MockServer::start().await;
+    mount_health_json(&server, serde_json::json!({"tier": "Community"})).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/ping"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/sink", sink.uri()).as_str()),
+        )
+        .mount(&server)
+        .await;
+
+    let delivered = send_heartbeat(&ctx_for(&server.uri(), &checkpoint_url(&server))).await;
+
+    assert!(
+        !delivered,
+        "a 302 on the checkpoint URL must not be reported as a delivered ping"
+    );
+    assert!(
+        seen(&sink).await.is_empty(),
+        "the redirect target must never be contacted"
+    );
+}
+
+#[test]
+fn the_guard_interval_widens_after_consecutive_failures() {
+    // Without backoff, a deployment that cannot reach the checkpoint service
+    // probes the CUSTOMER'S OWN platform once an hour forever, for a heartbeat
+    // disclosed as weekly.
+    assert_eq!(guard_interval_for(0), HEARTBEAT_GUARD_INTERVAL);
+    assert_eq!(guard_interval_for(1), HEARTBEAT_GUARD_INTERVAL * 2);
+    assert_eq!(guard_interval_for(2), HEARTBEAT_GUARD_INTERVAL * 4);
+    assert!(guard_interval_for(3) > guard_interval_for(2));
+
+    // Capped at the 7-day cadence: backing off further than the heartbeat
+    // interval itself would achieve nothing.
+    assert_eq!(guard_interval_for(20), HEARTBEAT_INTERVAL);
+    // And a counter that keeps climbing must never panic on the shift.
+    assert_eq!(guard_interval_for(u32::MAX), HEARTBEAT_INTERVAL);
+}
+
+#[tokio::test]
+async fn a_failed_attempt_backs_off_and_a_delivery_resets_it() {
+    let env = TelemetryTestEnv::on();
+
+    // Rejected: the failure counter climbs.
+    let server = MockServer::start().await;
+    mount_health_json(&server, serde_json::json!({"tier": "Community"})).await;
+    mount_checkpoint(&server, 500).await;
+    env.set("AXONFLOW_CHECKPOINT_URL", &checkpoint_url(&server));
+    assert!(heartbeat_pass_for_tests(&server.uri(), &Mode::Production).await);
+    assert_eq!(consecutive_failures_for_tests(), 1);
+
+    env.advance_past_the_guard();
+    assert!(heartbeat_pass_for_tests(&server.uri(), &Mode::Production).await);
+    assert_eq!(consecutive_failures_for_tests(), 2);
+
+    // Delivered: back to the base interval immediately.
+    env.advance_past_the_guard();
+    let ok = MockServer::start().await;
+    mount_health_json(&ok, serde_json::json!({"tier": "Community"})).await;
+    mount_checkpoint(&ok, 200).await;
+    env.set("AXONFLOW_CHECKPOINT_URL", &checkpoint_url(&ok));
+    assert!(heartbeat_pass_for_tests(&ok.uri(), &Mode::Production).await);
+    assert_eq!(
+        consecutive_failures_for_tests(),
+        0,
+        "a delivered ping must clear the backoff"
+    );
+}
+
+#[tokio::test]
+async fn a_pass_stopped_by_a_fresh_stamp_is_not_counted_as_a_failure() {
+    // Backing off because nothing needed sending would widen the interval for
+    // a healthy deployment.
+    let env = TelemetryTestEnv::on();
+    let server = MockServer::start().await;
+    mount_checkpoint(&server, 200).await;
+    env.set("AXONFLOW_CHECKPOINT_URL", &checkpoint_url(&server));
+    std::fs::write(&env.stamp_path, "last_sent=now").expect("write stamp");
+
+    assert!(heartbeat_pass_for_tests(&server.uri(), &Mode::Production).await);
+    assert_eq!(consecutive_failures_for_tests(), 0);
+}
+
 // ============================================================================
 
 #[tokio::test]
@@ -1496,15 +1647,40 @@ fn shipped_sources() -> Vec<(String, String)> {
     out
 }
 
+/// Source with ALL whitespace removed, so a guard cannot be dodged by writing
+/// `. send()` or splitting a call across lines.
+fn squashed(src: &str) -> String {
+    src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// The heartbeat gate is only consulted on requests that go through
-/// `AxonFlowClient::dispatch`. A new method that calls `.send()` directly
+/// `AxonFlowClient::dispatch`. A new method that issued a request directly
 /// would silently opt itself out — and nothing about the call site would look
 /// wrong. The walk is over the whole tree rather than a list of known files,
 /// so a NEW module is covered the day it is added.
+///
+/// The axis is: **every way `reqwest` can issue a request**, not the spelling
+/// `.send()`. An earlier version of this guard counted only `.send()` and was
+/// evaded in review by `client.execute(req)` and by `. send()` with a space —
+/// a guard that pinned the convention rather than the property. The token list
+/// below is the closed set of request-issuing entry points in `reqwest`'s
+/// public API, matched against whitespace-stripped source.
 #[test]
 fn no_http_send_outside_the_dispatch_funnel() {
+    // Every reqwest API that actually puts a request on the wire.
+    const ISSUING_TOKENS: &[&str] = &[
+        ".send()",
+        ".execute(",
+        "reqwest::get(",
+        "RequestBuilder::send(",
+    ];
+
     for (file, src) in shipped_sources() {
-        let sends = src.matches(".send()").count();
+        let squashed = squashed(&src);
+        let issued: usize = ISSUING_TOKENS
+            .iter()
+            .map(|t| squashed.matches(t).count())
+            .sum();
         let expected = if file.ends_with("client.rs") {
             1 // AxonFlowClient::dispatch
         } else if file.ends_with("heartbeat.rs") {
@@ -1513,20 +1689,41 @@ fn no_http_send_outside_the_dispatch_funnel() {
             0
         };
         assert_eq!(
-            sends, expected, "{file} has {sends} `.send()` call(s), expected {expected}. \
-             Every SDK request must go through `AxonFlowClient::dispatch` so the heartbeat gate \
-             is consulted; the telemetry path is the deliberate exception and builds its own client."
+            issued, expected,
+            "{file} issues {issued} HTTP request(s), expected {expected}. Every SDK request must \
+             go through `AxonFlowClient::dispatch` so the heartbeat gate is consulted; the \
+             telemetry path is the deliberate exception and builds its own client."
         );
     }
 }
 
-/// The telemetry path must stay at exactly two outbound requests. A third —
-/// a second `/health` fetch for a new dimension, say — would double its
-/// blocking budget and its failure surface.
+/// The telemetry path must stay at exactly two outbound requests on one
+/// client. A third — a second `/health` fetch for a new dimension, say —
+/// would double its blocking budget and its failure surface, and a second
+/// client would be a second transport with its own opinions about timeouts,
+/// TLS posture, redirects and pooling.
+///
+/// Same lesson as the guard above: the axis is "a client is constructed", and
+/// `reqwest` offers three spellings of that.
 #[test]
 fn the_telemetry_path_builds_exactly_one_http_client() {
+    // `Client::builder()` is left unqualified on purpose: it matches both the
+    // bare form and `reqwest::Client::builder()` as a substring, and no
+    // AxonFlow type has a `builder()`. `new()` IS qualified, because
+    // `AxonFlowClient::new()` would otherwise match it.
+    const CONSTRUCTING_TOKENS: &[&str] = &[
+        "Client::builder()",
+        "ClientBuilder::new()",
+        "reqwest::Client::new()",
+    ];
+
     for (file, src) in shipped_sources() {
-        let builders = src.matches("reqwest::Client::builder()").count();
+        let squashed = squashed(&src);
+        let built: usize = CONSTRUCTING_TOKENS
+            .iter()
+            .map(|t| squashed.matches(t).count())
+            .sum();
+
         let expected = if file.ends_with("client.rs") {
             2 // http_client + map_http_client
         } else if file.ends_with("heartbeat.rs") {
@@ -1535,8 +1732,8 @@ fn the_telemetry_path_builds_exactly_one_http_client() {
             0
         };
         assert_eq!(
-            builders, expected,
-            "{file} builds {builders} reqwest client(s), expected {expected}"
+            built, expected,
+            "{file} builds {built} reqwest client(s), expected {expected}"
         );
     }
 }
