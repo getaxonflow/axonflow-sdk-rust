@@ -273,15 +273,23 @@ mutant "probe User-Agent removed" \
 #     through `ClientBuilder::new()` rather than `reqwest::Client::builder()`.
 #     Both left the previous guards green.
 # ---------------------------------------------------------------------------
-# Planted at `raw_get`, deliberately NOT at `checked_get`: `checked_get` is
+# Planted at `raw_get_as`, deliberately NOT at `checked_get`: `checked_get` is
 # exercised by a behavioural test, which would kill this mutant on its own and
-# leave the source guard's own strength unmeasured. `raw_get` has no such test,
-# so only the guard can catch it. UFCS form, because that is what evaded the
-# guard in review.
+# leave the source guard's own strength unmeasured. UFCS form, because that is
+# what evaded the guard in review.
+#
+# Re-anchored from `raw_get` when the read-path identity work (#85) replaced
+# that method with `raw_get_as` — a defaulting wrapper would have been a second,
+# quieter way to make an unidentified read, so it was removed rather than kept.
+# The isolation the comment above depends on still holds: what this mutant
+# bypasses is `dispatch`, and `dispatch` is where the heartbeat gate runs, which
+# no behavioural test on this path asserts. Verified by running the gate: the
+# mutant is killed by the SOURCE guard, and the suite is otherwise green under
+# it.
 mutant_in "src/client.rs" "an ungated request issued via UFCS Client::execute" \
   "heartbeat::tests::no_http_send_outside_the_dispatch_funnel" \
-  '        Ok(self.dispatch(self.http_client.get(url)).await?)' \
-  '        let built = self.http_client.get(url).build()?;
+  '        Ok(self.dispatch(req).await?)' \
+  '        let built = req.build()?;
         Ok(reqwest::Client::execute(&self.http_client, built).await?)'
 
 # Qualified-path form, which is what evaded the guard in review.
