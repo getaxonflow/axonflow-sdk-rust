@@ -497,7 +497,7 @@ mutant_in "src/client.rs" "the cold-path send spawned instead of awaited" \
 # Constructing a client is not usage. Restoring the constructor trigger makes
 # every adapter registration too late for the first ping again.
 mutant_in "src/client.rs" "the constructor pings again" \
-  "heartbeat::tests::the_first_request_delivers_through_the_spawn_path" \
+  "heartbeat::tests::the_first_request_delivers_the_ping" \
   '        Ok(Self {
             config,' \
   '        crate::heartbeat::maybe_send_heartbeat(&config.endpoint, &config.mode);
