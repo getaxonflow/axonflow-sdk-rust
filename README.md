@@ -318,7 +318,9 @@ let config = AxonFlowConfig {
 
 The SDK includes a non-blocking background heartbeat that follows the AxonFlow telemetry contract: **at most one ping per machine every 7 days** to `https://checkpoint.getaxonflow.com/v1/ping`. Payload is classification-only — SDK version, OS, architecture, Rust toolchain version, deployment mode, an endpoint-type bucket (`localhost` / `private_network` / `remote` / `unknown`), and the deployment's `org_id` (the `ORG_ID` env value, or the `local-dev-org` sentinel when unset; on Community SaaS it is the `cs_<uuid>` tenant identifier). The raw URL of your endpoint is never sent — only the bucket it falls into.
 
-The gate is evaluated when a client is constructed and again on each SDK request, so a long-running service stays visible across the 7-day boundary. Evaluating it costs one in-process check; the `/health` probe and the ping run on a background task and never delay your call.
+The gate is evaluated **on each SDK request** — not when a client is constructed — so a long-running service stays visible across the 7-day boundary, and a client that is built but never used sends nothing at all. Evaluating it costs one in-process check, which is what almost every request pays.
+
+When a ping is actually due, the `/health` probe and the POST are **awaited on that request**, bounded at 3 seconds. They are not spawned, and that is deliberate: a spawned send dies with a process that does not outlive it, measured at **1 delivery in 12** for a compiled one-call binary — precisely the short-lived CLI, job and function population the signal exists to count. The cost is reachable at most once per hour per process, and only when a ping is due, which the 7-day stamp limits to once per machine per week.
 
 ### Declaring a framework adapter (`register_adapter`)
 
@@ -368,7 +370,7 @@ Four values are read from that one response and relayed onto the ping: the platf
 
 **Transient values are reported as-is.** A platform that is still starting reports `starting`, and the SDK forwards that unchanged rather than filtering it.
 
-**A failure here never costs you the ping or the request.** The probe has its own capped share of a single 3-second budget covering the whole telemetry path, so an unreachable or slow `/health` cannot delay *your* call, cost you the ping, stack timeouts, or surface an error to your code. It can delay the ping itself by up to that capped share, on the background task.
+**A failure here never costs you the ping, and what it can cost your request is bounded and stated.** The probe has its own capped share of a single 3-second budget covering the whole telemetry path, so an unreachable or slow `/health` cannot cost you the ping, stack timeouts, or surface an error to your code. Because the telemetry path is awaited on the request that triggers it, a slow probe **can** delay that one call — by at most its capped share of those 3 seconds, at most once per hour per process, and only when a ping is due.
 
 If the checkpoint service cannot be reached at all — an air-gapped or egress-restricted deployment — repeated failures widen the retry interval rather than retrying hourly forever. That backoff is per process, so a fleet of short-lived processes still attempts once per process start; `AXONFLOW_TELEMETRY=off` is the way to stop it entirely.
 

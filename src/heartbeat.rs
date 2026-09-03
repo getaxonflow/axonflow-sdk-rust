@@ -409,16 +409,18 @@ fn prepare_heartbeat(endpoint: &str, mode: &Mode) -> Option<(HeartbeatContext, G
     Some((HeartbeatContext::from_env(endpoint, mode), slot))
 }
 
-/// Fire-and-forget heartbeat. Called from `AxonFlowClient::new` and from
-/// `AxonFlowClient::dispatch` — the single site every SDK HTTP request passes
-/// through — so a long-running service stays visible instead of getting one
-/// chance at construction.
+/// Fire-and-forget heartbeat. **No longer called from anywhere inside this
+/// crate**: `AxonFlowClient::new` no longer pings at all, and
+/// `AxonFlowClient::dispatch` uses [`maybe_send_heartbeat_on_request`]. It is
+/// retained because `heartbeat` is a public module and removing it would be a
+/// breaking change, and because it is the only entry point usable from a
+/// caller that cannot await.
 ///
 /// Never blocks and never awaits on the caller's path: the gating decision is
 /// a mutex acquire, and everything that can block (the stamp `stat()`, the
 /// `/health` probe, the POST) runs on a spawned tokio task.
 ///
-/// **This is NOT what the request path uses.** A spawned send is dropped when
+/// **This is NOT what the request path uses, and the reason is delivery.** A spawned send is dropped when
 /// the process does not outlive it — measured at 1 delivery in 12 for a
 /// compiled one-call binary — so the client's first request awaits the send
 /// inline via [`maybe_send_heartbeat_on_request`]. This entry point remains for
@@ -1249,8 +1251,8 @@ fn consecutive_failures_for_tests() -> u32 {
 /// same [`prepare_heartbeat`] and [`gated_send`] in the same order that
 /// [`maybe_send_heartbeat`] does. The only thing it replaces is the spawn, so
 /// a test cannot pass against an ordering the shipped path does not have.
-/// The spawn itself is covered separately, through the real public entry
-/// point, by `constructor_delivers_through_the_spawn_path`.
+/// The shipped trigger is covered separately, through the real public entry
+/// point, by `the_first_request_delivers_the_ping`.
 ///
 /// Returns whether the pass ran at all (i.e. whether the gate let it through).
 #[cfg(test)]

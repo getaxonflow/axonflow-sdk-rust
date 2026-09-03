@@ -1569,15 +1569,18 @@ fn the_real_stamp_path_is_under_the_user_cache_dir() {
 // --- the two trigger sites, through the real public API ---
 
 #[tokio::test]
-async fn the_first_request_delivers_through_the_spawn_path() {
-    // Covers the one line `heartbeat_pass_for_tests` replaces: the spawn.
+async fn the_first_request_delivers_the_ping() {
+    // Covers the one line `heartbeat_pass_for_tests` replaces: the real
+    // trigger, reached through the real public API.
     //
-    // RENAMED FROM `constructor_delivers_through_the_spawn_path`, because the
-    // constructor no longer pings (axonflow-enterprise#3682): every framework
-    // adapter takes a client, so an adapter registering from its own
-    // constructor could never reach a constructor-time ping. The property under
-    // test is unchanged — the real public API reaches the real spawn — but the
-    // trigger it goes through is now the first outbound request.
+    // RENAMED TWICE, and the second rename is the point. It was
+    // `constructor_delivers_through_the_spawn_path`; the constructor stopped
+    // pinging (axonflow-enterprise#3682), so it became
+    // `the_first_request_delivers_through_the_spawn_path` — which still named
+    // a SPAWN this path no longer performs. The request path now AWAITS the
+    // send inline, because a spawned send dies with a short-lived process
+    // (1 delivery in 12, measured). A test named for a mechanism the code
+    // dropped tells its next reader something false about what is covered.
     let env = TelemetryTestEnv::on();
     let server = MockServer::start().await;
     mount_health_json(
@@ -1611,8 +1614,10 @@ async fn the_first_request_delivers_through_the_spawn_path() {
 
     client.list_connectors().await.expect("connectors call");
 
-    // The ping is spawned, so wait for it to land rather than asserting into
-    // a race.
+    // The send is awaited inside `list_connectors`, so the ping has already
+    // landed by the time that call returns. `await_ping` is kept as the
+    // assertion rather than a bare count so this test does not become a race
+    // if the trigger ever moves off the awaited path again.
     await_ping(&server, 1).await;
 
     let body = only_ping_body(&server).await;
