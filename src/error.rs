@@ -18,6 +18,17 @@ pub enum AxonFlowError {
     /// otherwise (clippy::result_large_err).
     #[error("Rate limited (tier={}, limit_type={}): {}", .envelope.tier, .envelope.limit_type, .envelope.error)]
     RateLimited { envelope: Box<RateLimitEnvelope> },
+    /// A role-scoped read whose answer was decided by the caller's identity
+    /// scope rather than by the data (platform #2922).
+    ///
+    /// It exists because "no rows" and "no identity" are the same bytes on the
+    /// wire. See [`ReadScopeRefusal`](crate::ReadScopeRefusal) for the two
+    /// shapes and why an own-rows miss is NOT a claim that the row exists.
+    ///
+    /// Boxed for the same reason `RateLimited` is: it would otherwise dominate
+    /// the enum's size (clippy::result_large_err).
+    #[error("{0}")]
+    ReadScope(Box<crate::read_identity::ReadScopeRefusal>),
     #[error("Configuration error: {0}")]
     ConfigError(String),
     #[error("AxonFlow platform is unavailable: {0}")]
@@ -49,7 +60,7 @@ impl AxonFlowError {
     }
 
     /// Whether this error should trigger fail-open (return a synthetic success
-    /// response). Currently identical to [`is_retryable`]; maintained as a
+    /// response). Currently identical to [`Self::is_retryable`]; maintained as a
     /// separate method because future policy changes may diverge them (e.g.
     /// `ConfigError` could be fail-open-eligible but not retryable).
     pub fn is_fail_open_eligible(&self) -> bool {

@@ -194,6 +194,90 @@ This surface does **not** apply the client's `RetryConfig`: that executor is wir
 
 **The types are generated, never hand-written.** `src/authzen/types_gen.rs` is emitted from `testdata/authzen-surface.json`, the platform's canonical contract artifact, by `tools/gen-authzen-types`. Regenerate with `cargo run -p axonflow-authzen-codegen`; `cargo test` fails if the committed file is not what the artifact generates.
 
+## Reading decisions: who is asking decides what comes back
+
+`explain_decision` and `list_decisions` are scoped to the **per-user identity**
+you present, not to the tenant credential. Since platform #2922:
+
+| What you present | What an enterprise stack returns |
+|---|---|
+| a tenant-wide role (`admin`, `owner`, `policy_admin`) | the whole tenant |
+| any other identity (`developer`, `viewer`) | only the rows attributed to it |
+| **no identity** | **nothing at all** — every list is empty, every explain is not-found |
+
+`client_id`/`client_secret` authenticate the **organization**. They do not say
+who is asking, so on their own they land in the third row. Community and
+Community-SaaS deployments are single-operator and read tenant-wide with no
+identity needed.
+
+```rust
+let mut config = AxonFlowConfig::new("http://localhost:8080")
+    .with_auth(client_id, client_secret);
+config.user_token = Some(user_token);          // the per-user identity
+let client = AxonFlowClient::new(config)?;
+
+// Per call:
+let exp = client.explain_decision_as(&decision_id, Some(&users_token)).await?;
+
+// Or, for a process acting on behalf of several people, derive a client bound
+// to one person. Unlike the `*_as` methods, which only the reads have, this
+// reaches EVERY method.
+let rows = client.as_user(&alices_token)
+    .list_decisions(ListDecisionsOptions::default())
+    .await?;
+```
+
+The token is a per-user JWT — minted by the customer portal's user-token API, or
+for local testing by `scripts/generate-jwt.sh --kind user`. It is **not** the
+tenant JWT and not `client_secret`. It is sent as `X-User-Token`, is redacted
+from the config's `Debug`, never reaches telemetry, and is never sent to any
+origin but the configured endpoint.
+
+Surrounding whitespace is trimmed, so a trailing newline off a file read is
+harmless. A token carrying an *embedded* control character cannot be an HTTP
+header value at all, and that is reported as an `AxonFlowError::ConfigError`
+naming the offending byte's position and class — never its value — with the
+request not sent. It is deliberately not dropped: a dropped one would make the
+read silently unidentified and the SDK would then report "no identity was
+presented", which is true of the wire and false of what you did.
+
+### Telling the outcomes apart
+
+"Not found", "not yours" and "no identity resolved" used to arrive as the same
+`404`, and an unscoped list arrived as an ordinary empty page. Both now carry a
+cause:
+
+```rust
+match client.list_decisions(ListDecisionsOptions::default()).await {
+    Err(AxonFlowError::ReadScope(refusal)) if refusal.identity_missing() => {
+        // The platform resolved no identity, so it returned zero rows by
+        // construction. The empty answer was never evidence about your data.
+    }
+    Ok(rows) => { /* ... */ }
+    Err(e) => return Err(e.into()),
+}
+```
+
+`explain_decision` is where the other scope shows up. Under `own-rows` the
+platform answers "not attributed to you" and "not there at all" with the **same
+404**, deliberately, so that a miss cannot be used to probe for another user's
+rows — the refusal reports the scope the read ran under, never a claim about
+what exists.
+
+> **A valid token can still resolve to nobody.** The platform reserves the whole
+> of `@axonflow.local` and `@axonflow.internal` for *shared* identities and
+> censuses them to nothing before scoping. A correctly-signed developer token
+> minted at `demo-user@axonflow.local` — which is `generate-jwt.sh`'s own
+> default — reads zero rows and reports `identity_missing()`, exactly like no
+> token at all. Mint per-user identities at a real domain.
+
+> **Setting `user_token` affects more than reads.** The header rides every
+> request and the agent validates it on every route it proxies — not just the
+> scoped reads. A stale or rotated token therefore turns `list_connectors`,
+> `install_connector` and policy CRUD into `401`s rather than merely unscoping a
+> read. That is the correct, fail-closed direction, but it puts this value in
+> the same rotation story as `client_secret`.
+
 ## Advanced Features
 
 ### Fail-Open Strategy

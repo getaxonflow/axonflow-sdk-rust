@@ -96,6 +96,7 @@ impl AxonFlowClient {
 
         let http_client = reqwest::Client::builder()
             .timeout(config.timeout)
+            .redirect(Self::redirect_policy(&config.endpoint))
             .default_headers(headers.clone())
             .danger_accept_invalid_certs(accept_invalid)
             .pool_max_idle_per_host(5)
@@ -105,6 +106,7 @@ impl AxonFlowClient {
 
         let map_http_client = reqwest::Client::builder()
             .timeout(config.map_timeout)
+            .redirect(Self::redirect_policy(&config.endpoint))
             .default_headers(headers)
             .danger_accept_invalid_certs(accept_invalid)
             .pool_max_idle_per_host(5)
@@ -254,7 +256,7 @@ impl AxonFlowClient {
             self.config.endpoint, encoded_id
         );
         let resp = self
-            .dispatch(self.http_client.post(&url).json(&req))
+            .dispatch(self.http_client.post(&url).json(&req), None)
             .await?;
         Self::check_status(resp).await?;
         Ok(())
@@ -380,7 +382,7 @@ impl AxonFlowClient {
         let encoded_id = utf8_percent_encode(plan_id, PATH_SEGMENT);
         let url = format!("{}/api/v1/plan/{}/cancel", self.config.endpoint, encoded_id);
         let resp = self
-            .dispatch(self.map_http_client.post(&url).json(&req_body))
+            .dispatch(self.map_http_client.post(&url).json(&req_body), None)
             .await?;
         let resp = Self::check_status(resp).await?;
         Ok(resp.json().await?)
@@ -401,7 +403,7 @@ impl AxonFlowClient {
 
         let url = format!("{}/api/audit/llm-call", self.config.endpoint);
         let resp = self
-            .dispatch(self.http_client.post(&url).json(&req_body))
+            .dispatch(self.http_client.post(&url).json(&req_body), None)
             .await?;
 
         let status = resp.status();
@@ -441,6 +443,27 @@ impl AxonFlowClient {
         request_type.hash(&mut hasher);
         query.hash(&mut hasher);
         user_token.hash(&mut hasher);
+        // The READ-PATH identity, which is a different thing from the
+        // `user_token` argument above: that one is the write-path BODY field
+        // this call was made with, and this one is the `X-User-Token` header
+        // the request will carry.
+        //
+        // It has to be in the key because a derived client SHARES the parent's
+        // cache (`as_user` clones the `Arc`) while presenting a different
+        // identity. Without it, `base.as_user(ALICE)` and `base.as_user(BOB)`
+        // making the same call hash to the same entry, so exactly ONE request
+        // is sent — carrying ALICE — and BOB is handed ALICE's governed
+        // response out of the cache. Two independent clients send two requests
+        // and never see it; only the derived-client path collides, which is
+        // the path `as_user` exists to make safe.
+        //
+        // Hashed, never stored: the key is the digest, so a cache dump cannot
+        // yield the credential.
+        self.config
+            .user_token
+            .as_deref()
+            .unwrap_or("")
+            .hash(&mut hasher);
         if !context.is_empty() {
             let sorted: std::collections::BTreeMap<_, _> = context.iter().collect();
             serde_json::to_string(&sorted)
@@ -457,12 +480,120 @@ impl AxonFlowClient {
         &self.config.endpoint
     }
 
-    /// The single site every SDK HTTP request passes through.
+    /// A client identical to this one but presenting `user_token`.
     ///
-    /// This is the Rust equivalent of the Go SDK's `doHttpRequest` middleware
-    /// (`heartbeat.go:257`): one interception point in the HTTP layer rather
-    /// than a `maybe_send_heartbeat` sprinkled per method. Consulting the gate
-    /// here is what keeps a long-running service visible to telemetry — before
+    /// The shape to reach for when one process acts on behalf of several people
+    /// — a gateway, a bot. Unlike the `*_as` read methods, which only the reads
+    /// have, this reaches EVERY method: there is no carve-out to remember and no
+    /// path on which the identity silently widens back to the process's own.
+    ///
+    /// ```no_run
+    /// # use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, ListDecisionsOptions};
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = AxonFlowClient::new(AxonFlowConfig::new("http://localhost:8080"))?;
+    /// let for_alice = client.as_user("alice-token");
+    /// let rows = for_alice.list_decisions(ListDecisionsOptions::default()).await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// The returned client SHARES this one's `reqwest::Client`s and cache —
+    /// `reqwest::Client` is an `Arc` internally, so cloning it shares the
+    /// connection pool, the redirect policy and every TLS and proxy setting.
+    /// Deriving one per request is therefore cheap, and the derivation cannot
+    /// quietly lose an egress proxy. Only the identity differs; this client is
+    /// not modified.
+    ///
+    /// Sharing the transport is safe here in a way it was NOT in the Python
+    /// sibling: the identity is resolved from `self.config` at request time by
+    /// `stamp_identity`, not captured in a hook bound to the client that built
+    /// it. A derived client therefore reads its OWN token by construction.
+    ///
+    /// An empty token returns a client presenting no identity at all, which on
+    /// an enterprise stack reads nothing (see
+    /// [`ReadScope::None`](crate::ReadScope::None)).
+    pub fn as_user(&self, user_token: impl Into<String>) -> Self {
+        let token = user_token.into();
+        let trimmed = token.trim();
+        let mut config = self.config.clone();
+        config.user_token = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        Self {
+            config,
+            http_client: self.http_client.clone(),
+            map_http_client: self.map_http_client.clone(),
+            cache: self.cache.clone(),
+        }
+    }
+
+    /// Redirects may not leave the configured origin.
+    ///
+    /// This is the second half of "the identity is sent to the configured
+    /// endpoint and nowhere else". `stamp_identity` decides what to stamp on the
+    /// FIRST request; reqwest then carries the headers through any redirect it
+    /// follows, and its sensitive-header list — the one that drops
+    /// `Authorization`, `Cookie` and `Proxy-Authorization` on a host change — is
+    /// FIXED and does not include a custom header. Measured in the sibling SDKs
+    /// on `net/http` and on Node's `fetch`: the redirect target received the
+    /// tenant credential stripped and the per-user one intact, which is the
+    /// wrong one to lose.
+    ///
+    /// A cross-origin redirect is therefore STOPPED rather than followed. That
+    /// is a small behaviour change and the right one for this client: it talks
+    /// to ONE configured endpoint, so a redirect leaving that origin is already
+    /// anomalous, and the caller sees the 3xx rather than a request that quietly
+    /// carried a person's credential somewhere they never named. Same-origin
+    /// redirects are followed as before, up to reqwest's usual bound.
+    fn redirect_policy(endpoint: &str) -> reqwest::redirect::Policy {
+        let configured = url::Url::parse(endpoint).ok();
+        reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("stopped after 10 redirects");
+            }
+            match &configured {
+                Some(origin) if crate::read_identity::same_origin(attempt.url(), origin) => {
+                    attempt.follow()
+                }
+                // Unparseable endpoint, or an off-origin hop: stop. Stopping
+                // returns the 3xx to the caller rather than erroring, so an
+                // ordinary redirect to another host degrades to a visible
+                // non-2xx instead of a silent credential leak.
+                _ => attempt.stop(),
+            }
+        })
+    }
+
+    /// The SDK's one send site — and therefore its one IDENTITY site.
+    ///
+    /// The read-path per-user identity is stamped here rather than as a default
+    /// header, because it must be conditional on the request's ORIGIN: the
+    /// identity is sent to the configured endpoint and nowhere else. See
+    /// [`crate::read_identity`] for why that matters (reqwest strips
+    /// `Authorization` across a host change and its list is fixed; a custom
+    /// header is not on it), and `redirect_policy` for the second half of the
+    /// guarantee.
+    ///
+    /// `override_token` is the PER-CALL identity, threaded through from the one
+    /// surface that takes one ([`Self::raw_get_as`]); every other caller passes
+    /// `None`, meaning "this call said nothing", so the client-wide
+    /// [`AxonFlowConfig::user_token`] applies. It is threaded rather than read
+    /// from the client because a process acting for several people must not need
+    /// a client each.
+    ///
+    /// The request is BUILT here before being stamped, so the origin check runs
+    /// against [`reqwest::Request::url`] — the URL that will actually be dialled
+    /// — rather than against a string passed alongside it. A URL argument that
+    /// can disagree with the request it describes is a guard that can be told
+    /// the wrong thing.
+    ///
+    /// # The telemetry gate
+    ///
+    /// This is also the SDK's one interception point for the heartbeat, the
+    /// Rust equivalent of the Go SDK's `doHttpRequest` middleware, rather than
+    /// a `maybe_send_heartbeat` sprinkled per method. Consulting the gate here
+    /// is what keeps a long-running service visible to telemetry: before
     /// 0.10.0 the constructor was the only trigger, so a service that crossed
     /// the 7-day boundary never pinged again.
     ///
@@ -479,13 +610,58 @@ impl AxonFlowClient {
     async fn dispatch(
         &self,
         req: reqwest::RequestBuilder,
-    ) -> Result<reqwest::Response, reqwest::Error> {
+        override_token: Option<&str>,
+    ) -> Result<reqwest::Response, AxonFlowError> {
         maybe_send_heartbeat(&self.config.endpoint, &self.config.mode);
-        req.send().await
+        let (client, built) = req.build_split();
+        let mut built = built?;
+        self.stamp_identity(&mut built, override_token)?;
+        Ok(client.execute(built).await?)
+    }
+
+    /// Stamp the per-user identity on a built request, if there is one and the
+    /// request is bound for the configured endpoint.
+    ///
+    /// Separate from [`Self::dispatch`] only so it can be asserted directly:
+    /// this origin guard is defence in depth beside `redirect_policy`, and a
+    /// doubly-guarded property makes a single-guard mutant survive unless one of
+    /// the two is exercised on its own.
+    pub(crate) fn stamp_identity(
+        &self,
+        req: &mut reqwest::Request,
+        override_token: Option<&str>,
+    ) -> Result<(), AxonFlowError> {
+        let token = match override_token {
+            Some(explicit) => explicit.trim(),
+            None => self.config.user_token.as_deref().unwrap_or("").trim(),
+        };
+        if token.is_empty() {
+            // Never send an empty header. To the platform a present-but-empty
+            // X-User-Token is still an absent one, but sending it advertises an
+            // identity mechanism the caller is not using, and it is one refactor
+            // away from a present-but-invalid token, which is a hard 401.
+            return Ok(());
+        }
+        let Ok(configured) = url::Url::parse(&self.config.endpoint) else {
+            // An unparseable endpoint is not a licence to send the credential
+            // anyway.
+            return Ok(());
+        };
+        if !crate::read_identity::same_origin(req.url(), &configured) {
+            return Ok(());
+        }
+        let mut value = reqwest::header::HeaderValue::from_str(token)
+            .map_err(|_| AxonFlowError::ConfigError(crate::read_identity::unusable_token(token)))?;
+        // Marked sensitive so it is redacted from reqwest's own header Debug
+        // output, the way the license key already is.
+        value.set_sensitive(true);
+        req.headers_mut()
+            .insert(crate::read_identity::HEADER_USER_TOKEN, value);
+        Ok(())
     }
 
     pub(crate) async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self.dispatch(self.http_client.get(url)).await?;
+        let resp = self.dispatch(self.http_client.get(url), None).await?;
         Self::check_status(resp).await
     }
 
@@ -500,7 +676,9 @@ impl AxonFlowClient {
         url: &str,
         body: &T,
     ) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self.dispatch(self.http_client.post(url).json(body)).await?;
+        let resp = self
+            .dispatch(self.http_client.post(url).json(body), None)
+            .await?;
         Self::check_status(resp).await
     }
 
@@ -509,8 +687,22 @@ impl AxonFlowClient {
     /// on specific status codes (e.g. parse a 429 V1 upgrade envelope into
     /// [`AxonFlowError::RateLimited`]) before falling back to the generic
     /// error path.
-    pub(crate) async fn raw_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        Ok(self.dispatch(self.http_client.get(url)).await?)
+    /// GET without status translation, carrying a per-call read identity.
+    ///
+    /// Replaced the old `raw_get`, whose one caller (`list_decisions`) now has
+    /// to pass an identity: a wrapper that defaulted it to `None` would be a
+    /// second, quieter way to make an unidentified read, which is the state
+    /// this whole surface exists to make visible.
+    ///
+    /// `None` means "this call said nothing", so the client-wide identity
+    /// applies; `Some("")` is a deliberate unidentified read. See
+    /// [`Self::stamp_identity`].
+    pub(crate) async fn raw_get_as(
+        &self,
+        url: &str,
+        user_token: Option<&str>,
+    ) -> Result<reqwest::Response, AxonFlowError> {
+        self.dispatch(self.http_client.get(url), user_token).await
     }
 
     /// Crate-internal POST of an already-encoded body with per-request headers,
@@ -542,15 +734,17 @@ impl AxonFlowClient {
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
-        Ok(self.dispatch(request).await?)
+        self.dispatch(request, None).await
     }
 
     async fn checked_map_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self.dispatch(self.map_http_client.get(url)).await?;
+        let resp = self.dispatch(self.map_http_client.get(url), None).await?;
         Self::check_status(resp).await
     }
 
-    async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, AxonFlowError> {
+    pub(crate) async fn check_status(
+        resp: reqwest::Response,
+    ) -> Result<reqwest::Response, AxonFlowError> {
         if resp.status().is_success() {
             Ok(resp)
         } else {
@@ -640,7 +834,9 @@ impl AxonFlowClient {
 
     async fn execute_request(&self, req: &ClientRequest) -> Result<ClientResponse, AxonFlowError> {
         let url = format!("{}/api/request", self.config.endpoint);
-        let resp = self.dispatch(self.http_client.post(&url).json(req)).await?;
+        let resp = self
+            .dispatch(self.http_client.post(&url).json(req), None)
+            .await?;
 
         let status = resp.status();
         let body = resp.text().await?;
@@ -659,5 +855,254 @@ impl AxonFlowClient {
                 message: body,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod read_identity_tests {
+    use crate::read_identity::HEADER_USER_TOKEN;
+    use crate::{AxonFlowClient, AxonFlowConfig};
+
+    fn client_for(endpoint: &str, token: Option<&str>) -> AxonFlowClient {
+        AxonFlowClient::new(AxonFlowConfig {
+            endpoint: endpoint.to_string(),
+            user_token: token.map(str::to_string),
+            ..AxonFlowConfig::new(endpoint)
+        })
+        .expect("client")
+    }
+
+    /// What `stamp_identity` stamped, for a request to `url`.
+    ///
+    /// Built from the client's OWN transport rather than a fresh
+    /// `reqwest::Client`, for two reasons: it is what production does, so the
+    /// default headers and configuration are the real ones; and
+    /// `the_telemetry_path_builds_exactly_one_http_client` counts transports
+    /// constructed in this FILE — it reads the source text, so a `#[cfg(test)]`
+    /// module trips it even though the client never ships. That guard exists to
+    /// stop a second transport with its own opinions about timeouts, TLS and
+    /// pooling, and a test is not a licence to add one.
+    fn stamped(client: &AxonFlowClient, url: &str, override_token: Option<&str>) -> Option<String> {
+        let mut req = client.http_client.get(url).build().expect("request");
+        client
+            .stamp_identity(&mut req, override_token)
+            .expect("the fixture tokens are all usable header values");
+        req.headers()
+            .get(HEADER_USER_TOKEN)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    }
+
+    /// The ORIGIN guard on the stamping side, exercised on its own.
+    ///
+    /// It exists as defence in depth beside `redirect_policy`, and a mutation
+    /// run proved why it needs its own test: with only the integration tests,
+    /// deleting this guard changed NOTHING observable, because the redirect
+    /// policy already stopped every off-origin hop before a request could be
+    /// built for one. A doubly-guarded property makes a single-guard mutant
+    /// survive — so the inner guard is asserted here, directly, where the outer
+    /// one cannot stand in for it.
+    ///
+    /// It is not redundant: any future method that takes a caller-supplied URL
+    /// rather than deriving one from `endpoint()` would reach the transport
+    /// without passing the redirect policy at all.
+    #[test]
+    fn the_identity_is_stamped_only_for_the_configured_origin() {
+        let client = client_for("https://localhost:8080", Some("SENTINEL"));
+
+        assert_eq!(
+            stamped(&client, "https://localhost:8080/api/v1/decisions", None).as_deref(),
+            Some("SENTINEL"),
+            "the configured origin must carry the identity"
+        );
+        for elsewhere in [
+            "https://elsewhere.invalid/api/v1/decisions", // different host
+            "https://localhost:9999/api/v1/decisions",    // different port
+            // Different scheme, and the direction that matters: a downgrade to
+            // cleartext must not carry the credential. Same host, same port.
+            "http://localhost:8080/api/v1/decisions",
+        ] {
+            assert_eq!(
+                stamped(&client, elsewhere, None),
+                None,
+                "{elsewhere} is not the configured origin and must not receive the identity"
+            );
+        }
+    }
+
+    /// The header is marked sensitive, so the credential does not reach a log
+    /// line through the ordinary `{:?}` that every debug print of a request
+    /// uses.
+    ///
+    /// The positive control is the point of this test, not decoration: a
+    /// `{:?}` that happens to render no headers at all would satisfy the
+    /// absence assertion while proving nothing, and that is exactly what a
+    /// future reqwest release changing its Debug shape would look like. The
+    /// control asserts the same rendering DOES show an ordinary header, so the
+    /// absence of the sensitive one is a redaction rather than an empty page.
+    #[test]
+    fn the_identity_is_redacted_from_the_requests_debug_output() {
+        let client = client_for("https://localhost:8080", Some("SENTINEL-TOKEN-VALUE"));
+        let mut req = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .header("X-Ordinary-Header", "ORDINARY-CONTROL-VALUE")
+            .build()
+            .expect("request");
+        client.stamp_identity(&mut req, None).expect("usable token");
+
+        let rendered = format!("{:?}", req);
+
+        assert!(
+            rendered.contains("ORDINARY-CONTROL-VALUE"),
+            "positive control: this Debug rendering must show an ordinary header value, or the \
+             absence assertion below holds for the wrong reason. Got: {rendered}"
+        );
+        assert!(
+            rendered.contains(HEADER_USER_TOKEN)
+                || rendered.contains(&HEADER_USER_TOKEN.to_ascii_lowercase()),
+            "positive control: the header must be PRESENT on the request and merely redacted — \
+             a test that passes because nothing was stamped is not a redaction test. Got: \
+             {rendered}"
+        );
+        assert!(
+            !rendered.contains("SENTINEL-TOKEN-VALUE"),
+            "the per-user identity reached a Debug rendering. set_sensitive(true) is what keeps \
+             it out of tracing spans, panic messages and debugger frames. Got: {rendered}"
+        );
+    }
+
+    /// A token no header value can carry is REPORTED, and the report does not
+    /// echo it.
+    ///
+    /// The unit-level half of the integration test that also proves nothing was
+    /// sent; this one pins the message's content, which is the part a caller
+    /// actually acts on.
+    #[test]
+    fn an_unusable_token_is_reported_without_echoing_it() {
+        let client = client_for("https://localhost:8080", Some("SENTINEL\u{7f}VALUE"));
+        let mut req = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .build()
+            .expect("request");
+
+        let err = client
+            .stamp_identity(&mut req, None)
+            .expect_err("an unsendable identity must be reported");
+        let rendered = err.to_string();
+
+        assert!(!rendered.contains("SENTINEL"), "token echoed: {rendered}");
+        assert!(!rendered.contains("VALUE"), "token echoed: {rendered}");
+        assert!(
+            rendered.contains("control character") && rendered.contains("byte 8"),
+            "the message must locate the offending byte and name its class: {rendered}"
+        );
+
+        // A TAB before the control character. Tab is a LEGAL header-value byte,
+        // so a predicate written as "first non-printable" would report the
+        // TAB's position and send the reader to the one character that was
+        // fine. Here the tab is byte 8 and the DEL is byte 10.
+        let mut tabbed = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .build()
+            .expect("request");
+        let tab_err = client
+            .stamp_identity(&mut tabbed, Some("SENTINEL\tX\u{7f}VALUE"))
+            .expect_err("an embedded DEL must be refused");
+        assert!(
+            tab_err.to_string().contains("byte 10"),
+            "want the DEL's position, not the legal tab's: {tab_err}"
+        );
+        assert!(
+            req.headers().get(HEADER_USER_TOKEN).is_none(),
+            "a rejected token must leave no header behind"
+        );
+    }
+
+    /// The diagnostic must point at the byte that is actually refused.
+    ///
+    /// A header value admits obs-text, so every byte from 0x80 up is legal —
+    /// `café-token` is sent as-is. A predicate written as "not printable ASCII"
+    /// accepts the same tokens but, when one IS refused, reports the position
+    /// of the first non-ASCII byte instead of the control character that caused
+    /// it, sending the reader to fix the one character that was fine.
+    #[test]
+    fn the_diagnostic_points_at_the_control_char_not_at_legal_non_ascii() {
+        let client = client_for("https://localhost:8080", None);
+        let mut req = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .build()
+            .expect("request");
+
+        // "café" is 5 bytes: the é is bytes 3-4. The newline is byte 9.
+        let err = client
+            .stamp_identity(&mut req, Some("café-tok\nen"))
+            .expect_err("an embedded newline must be refused");
+        let rendered = err.to_string();
+
+        assert!(
+            rendered.contains("byte 9"),
+            "want the newline's position, not the first non-ASCII byte's: {rendered}"
+        );
+        assert!(
+            !rendered.contains("non-ASCII byte at"),
+            "non-ASCII is legal in a header value and must not be named as the offender: \
+             {rendered}"
+        );
+    }
+
+    /// The other direction: a token that is merely non-ASCII must be SENT, not
+    /// refused. A diagnostic fixed by tightening the predicate instead of
+    /// correcting it would reject a legal credential.
+    #[test]
+    fn a_non_ascii_token_is_sent_rather_than_refused() {
+        let client = client_for("https://localhost:8080", Some("café-token"));
+        let mut req = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .build()
+            .expect("request");
+        client
+            .stamp_identity(&mut req, None)
+            .expect("obs-text is legal in a header value; refusing it would break a caller whose identity provider mints one");
+
+        // Compared as BYTES, not through `to_str()`: `HeaderValue::to_str`
+        // refuses obs-text itself, so a value that is perfectly legal on the
+        // wire reads back as None through it. The `stamped` helper takes that
+        // path, which is why this test builds the request itself — a helper
+        // that cannot represent the value under test would have made this
+        // assertion fail for a reason that has nothing to do with the SDK.
+        assert_eq!(
+            req.headers().get(HEADER_USER_TOKEN).map(|v| v.as_bytes()),
+            Some("café-token".as_bytes()),
+            "a non-ASCII token must be SENT, not refused"
+        );
+    }
+
+    /// An unparseable configured endpoint is not a licence to send the
+    /// credential anyway — the guard fails CLOSED, not open.
+    #[test]
+    fn an_unparseable_endpoint_sends_no_identity() {
+        let client = client_for("not a url", Some("SENTINEL"));
+        assert_eq!(stamped(&client, "https://localhost:8080/x", None), None);
+    }
+
+    /// `Some("")` is a caller deliberately making one read unidentified and must
+    /// not fall back to the client-wide value; `None` means "this call said
+    /// nothing" and must.
+    #[test]
+    fn an_explicit_empty_override_does_not_fall_back() {
+        let client = client_for("https://localhost:8080", Some("CLIENT-WIDE"));
+        let url = "https://localhost:8080/api/v1/decisions";
+
+        assert_eq!(stamped(&client, url, None).as_deref(), Some("CLIENT-WIDE"));
+        assert_eq!(
+            stamped(&client, url, Some("PER-CALL")).as_deref(),
+            Some("PER-CALL")
+        );
+        assert_eq!(stamped(&client, url, Some("   ")), None);
     }
 }

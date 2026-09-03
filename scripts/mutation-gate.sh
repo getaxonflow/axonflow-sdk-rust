@@ -90,13 +90,52 @@ mutant_in() {
   apply "$file" "$find" "$repl"
 
   printf '\n=== mutant: %s\n    expecting RED: %s\n' "$name" "$test_name"
-  if cargo test --lib "$test_name" -- --exact >/dev/null 2>&1; then
+  # `set -e` aborts on a bare assignment from a failing command substitution,
+  # and a failing test is the EXPECTED outcome here — so the exit code is taken
+  # through an || branch, which is exempt.
+  local out code
+  out=$(cargo test --lib "$test_name" -- --exact 2>&1) && code=0 || code=$?
+  verdict "$code" "$out" "$test_name"
+  restore_files
+}
+
+# verdict <exit-code> <output> <test-name>
+# A test name that matches NOTHING exits 0 with "running 0 tests", which reads
+# as a survivor: alarming in the safe direction, but it is a typo reported as a
+# finding, and it cost a round to diagnose. Named explicitly instead.
+verdict() {
+  local code="$1" out="$2" test_name="$3"
+  # "at least one test EXECUTED", not "no empty block appeared": a cargo run
+  # prints a `running 0 tests` block for a second target even on a healthy
+  # single-test run, and keying on that string reported all seventeen working
+  # mutants as unreadable. The executed-test line is the thing being asserted.
+  if ! printf '%s' "$out" | grep -qE '^test .+ \.\.\. '; then
+    printf '    ERROR — no test matches %s; the gate cannot read this mutant\n' "$test_name" >&2
+    fail=$((fail + 1))
+    return
+  fi
+  if [ "$code" -eq 0 ]; then
     printf '    SURVIVED — the test does not detect this defect\n'
     fail=$((fail + 1))
   else
     printf '    killed\n'
     pass=$((pass + 1))
   fi
+}
+
+# mutant_it <name> <test> <find> <replace>
+# Same, for a defect whose killing test lives in tests/read_identity_test.rs.
+# `cargo test --lib` does NOT build the integration targets, so a mutant aimed at
+# one and run with --lib would report "killed" for a test that never ran.
+mutant_it() {
+  local name="$1" test_name="$2" find="$3" repl="$4"
+  restore_files
+  apply "src/client.rs" "$find" "$repl"
+
+  printf '\n=== mutant: %s\n    expecting RED: %s\n' "$name" "$test_name"
+  local out code
+  out=$(cargo test --test read_identity_test "$test_name" -- --exact 2>&1) && code=0 || code=$?
+  verdict "$code" "$out" "$test_name"
   restore_files
 }
 
@@ -112,6 +151,14 @@ mutant() {
 # ---------------------------------------------------------------------------
 printf '=== baseline: the unmutated tree must pass every target test\n'
 if ! cargo test --lib heartbeat:: 2>&1 | tail -3; then
+  echo "BASELINE FAILED — fix the suite before reading any mutant result" >&2
+  exit 1
+fi
+if ! cargo test --lib client::read_identity_tests:: 2>&1 | tail -3; then
+  echo "BASELINE FAILED — fix the suite before reading any mutant result" >&2
+  exit 1
+fi
+if ! cargo test --test read_identity_test 2>&1 | tail -3; then
   echo "BASELINE FAILED — fix the suite before reading any mutant result" >&2
   exit 1
 fi
@@ -273,16 +320,24 @@ mutant "probe User-Agent removed" \
 #     through `ClientBuilder::new()` rather than `reqwest::Client::builder()`.
 #     Both left the previous guards green.
 # ---------------------------------------------------------------------------
-# Planted at `raw_get`, deliberately NOT at `checked_get`: `checked_get` is
+# Planted at `raw_get_as`, deliberately NOT at `checked_get`: `checked_get` is
 # exercised by a behavioural test, which would kill this mutant on its own and
-# leave the source guard's own strength unmeasured. `raw_get` has no such test,
-# so only the guard can catch it. UFCS form, because that is what evaded the
-# guard in review.
+# leave the source guard's own strength unmeasured. UFCS form, because that is
+# what evaded the guard in review.
+#
+# Re-anchored from `raw_get` when the read-path identity work (#85) replaced
+# that method with `raw_get_as` — a defaulting wrapper would have been a second,
+# quieter way to make an unidentified read, so it was removed rather than kept.
+# The isolation the comment above depends on still holds: what this mutant
+# bypasses is `dispatch`, and `dispatch` is where the heartbeat gate runs, which
+# no behavioural test on this path asserts. Verified by running the gate: the
+# mutant is killed by the SOURCE guard, and the suite is otherwise green under
+# it.
 mutant_in "src/client.rs" "an ungated request issued via UFCS Client::execute" \
   "heartbeat::tests::no_http_send_outside_the_dispatch_funnel" \
-  '        Ok(self.dispatch(self.http_client.get(url)).await?)' \
+  '        let resp = self.dispatch(self.http_client.get(url), None).await?;' \
   '        let built = self.http_client.get(url).build()?;
-        Ok(reqwest::Client::execute(&self.http_client, built).await?)'
+        let resp = reqwest::Client::execute(&self.http_client, built).await?;'
 
 # Qualified-path form, which is what evaded the guard in review.
 mutant_in "src/client.rs" "a second transport built via a qualified path" \
@@ -290,6 +345,75 @@ mutant_in "src/client.rs" "a second transport built via a qualified path" \
   '        let http_client = reqwest::Client::builder()' \
   '        let _extra: Result<reqwest::Client, _> = <reqwest::Client>::builder().build();
         let http_client = reqwest::Client::builder()'
+
+# ---------------------------------------------------------------------------
+# The read-path identity properties. Each of these four was a REAL defect in an
+# earlier push of this branch, not an invented one — which is why they are here
+# rather than left to the suite.
+# ---------------------------------------------------------------------------
+
+# The identity reaches only the per-call read helper, so a client derived with
+# as_user runs every other method as the process. This was the shipped
+# behaviour until round 2; the doc claiming otherwise is what made it invisible.
+mutant_it "the identity stamped only when a per-call override is given" \
+  "a_derived_client_presents_its_identity_on_every_route" \
+  '        let token = match override_token {
+            Some(explicit) => explicit.trim(),
+            None => self.config.user_token.as_deref().unwrap_or("").trim(),
+        };' \
+  '        let token = match override_token {
+            Some(explicit) => explicit.trim(),
+            None => "",
+        };'
+
+# A token no header value can carry is dropped instead of reported. The read
+# then goes out unidentified and the SDK blames the platform for it.
+mutant_it "an unusable token silently dropped" \
+  "a_token_that_cannot_be_a_header_value_is_reported_not_dropped" \
+  '        let mut value = reqwest::header::HeaderValue::from_str(token)
+            .map_err(|_| AxonFlowError::ConfigError(crate::read_identity::unusable_token(token)))?;' \
+  '        let Ok(mut value) = reqwest::header::HeaderValue::from_str(token) else {
+            return Ok(());
+        };'
+
+# The MAP transport is a SECOND reqwest::Client, and therefore a second chance
+# to forget the redirect policy. Every redirect test drove the other one.
+mutant_it "the redirect policy dropped from the MAP transport" \
+  "the_map_transport_also_refuses_an_off_origin_redirect" \
+  '        let map_http_client = reqwest::Client::builder()
+            .timeout(config.map_timeout)
+            .redirect(Self::redirect_policy(&config.endpoint))' \
+  '        let map_http_client = reqwest::Client::builder()
+            .timeout(config.map_timeout)'
+
+# The identity dropped from the cache key. A derived client shares the parent's
+# Arc<Cache> by design, so without the identity in the key two derived clients
+# making the same call hash to ONE entry and the second is handed the first
+# one's governed response - a cross-user data leak with no request made on the
+# second caller's behalf at all.
+mutant_it "the read identity dropped from the cache key" \
+  "two_derived_clients_do_not_share_a_cached_response" \
+  '        self.config
+            .user_token
+            .as_deref()
+            .unwrap_or("")
+            .hash(&mut hasher);' \
+  '        "".hash(&mut hasher);'
+
+# The other direction: a key that never matches is a disabled cache wearing a
+# fix's name, and it would satisfy the leak test above.
+mutant_it "the cache key made unique per call" \
+  "one_identity_asking_twice_still_hits_the_cache" \
+  '        format!("{:x}", hasher.finish())' \
+  '        format!("{:x}-{:?}", hasher.finish(), std::time::Instant::now())'
+
+# set_sensitive is what keeps the credential out of tracing spans and panic
+# messages; nothing about the wire changes when it goes, so only a Debug
+# assertion can see it.
+mutant_in "src/client.rs" "the identity header no longer marked sensitive" \
+  "client::read_identity_tests::the_identity_is_redacted_from_the_requests_debug_output" \
+  '        value.set_sensitive(true);' \
+  '        value.set_sensitive(false);'
 
 printf '\n=== mutation gate: %d killed, %d survived\n' "$pass" "$fail"
 if [ "$fail" -ne 0 ]; then
