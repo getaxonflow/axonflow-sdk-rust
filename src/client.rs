@@ -125,7 +125,20 @@ impl AxonFlowClient {
             None
         };
 
-        maybe_send_heartbeat(&config.endpoint, &config.mode);
+        // NO HEARTBEAT HERE ANY MORE (axonflow-enterprise#3682). The gate is
+        // consulted on this client's FIRST OUTBOUND REQUEST instead, in
+        // `dispatch` — which was already a call site, so this is a removal
+        // rather than a move.
+        //
+        // Why: every framework adapter takes a client, so an adapter cannot
+        // exist until this constructor has returned. Pinging here meant an
+        // adapter registering from its own constructor could never reach the
+        // first ping, and the 7-day stamp then suppressed the next one for a
+        // week — so a short-lived process using an adapter reported it never.
+        // See `heartbeat::register_adapter`.
+        //
+        // A client that is constructed and never used no longer pings. That is
+        // deliberate and disclosed: a heartbeat is a claim about usage.
 
         Ok(Self {
             config,

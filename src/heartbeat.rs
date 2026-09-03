@@ -94,6 +94,141 @@ const MAX_HEALTH_BODY_BYTES: usize = 1024 * 1024;
 /// is that it relays verbatim or says nothing.
 const MAX_RELAYED_VALUE_LEN: usize = 64;
 
+/// Bounds on the `features` array, mirroring the receiver's own `MaxFeatures` /
+/// `MaxFeatureBytes`. Applying them client-side means an over-long array is
+/// shaped HERE, where the SDK still knows what it dropped, rather than silently
+/// at ingest.
+///
+/// READ WHAT THESE TWO ACTUALLY REACH. The entry cap is live: register 33
+/// adapters and the 33rd does not reach the wire. The byte cap is a BACKSTOP
+/// that today's only producer cannot trigger — [`register_adapter`] already
+/// refuses a name over [`MAX_RELAYED_VALUE_LEN`], so the longest entry it can
+/// emit is `"adapter:".len() + 64 == 72` bytes. It is tested directly on
+/// [`bound_features`], because a test driven through the registry could not
+/// express it.
+const MAX_FEATURES: usize = 32;
+const MAX_FEATURE_BYTES: usize = 128;
+
+/// Marks a `features[]` entry as an adapter identifier. The vocabulary is
+/// SERVER-DEFINED (checkpoint-service `FeatureAdapterPrefix`) and is not this
+/// SDK's to extend.
+const FEATURE_ADAPTER_PREFIX: &str = "adapter:";
+
+/// Adapter names declared by [`register_adapter`].
+///
+/// A set, so a framework that registers on every wrapper construction — the
+/// ordinary case for an adapter whose constructor runs per request — declares
+/// itself once on the wire rather than N times.
+fn adapter_registry() -> &'static Mutex<std::collections::BTreeSet<String>> {
+    static REGISTRY: OnceLock<Mutex<std::collections::BTreeSet<String>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(std::collections::BTreeSet::new()))
+}
+
+/// Declare that a framework adapter is driving this SDK, so the next telemetry
+/// heartbeat carries `adapter:<name>` in its `features` array.
+///
+/// A framework adapter (LangChain, LangGraph, LiteLLM, …) wrapping this SDK is
+/// indistinguishable from bare SDK use on every other telemetry dimension —
+/// same `sdk`, same `sdk_version`, same endpoint. This is the one call that
+/// makes the difference visible, and it is adoption signal only.
+///
+/// # It adds no request
+///
+/// The name rides the `features` array of the heartbeat that already fires;
+/// there is no second ping, no second endpoint and no new configuration
+/// surface. Calling this does not itself send anything.
+///
+/// Call it before your first API call for day-one attribution: the heartbeat
+/// fires on the client's FIRST OUTBOUND REQUEST, not at construction, so a name
+/// registered afterwards rides the next heartbeat.
+///
+/// Idempotent and safe from any thread.
+///
+/// # The name is not validated against a list, deliberately
+///
+/// The canonical vocabulary lives on the receiver (checkpoint-service
+/// `NormalizeAdapterFeature`, which folds an unrecognised name into
+/// `adapter:unknown` at READ time while keeping the raw name on the row). An
+/// allowlist here would be a second vocabulary that drifts from the first: a
+/// name this SDK build predates would be dropped at the client instead of
+/// arriving and rendering as "someone is using an adapter we do not know
+/// about" — precisely the signal the unknown bucket exists to preserve.
+///
+/// So the only transformations are the two the receiver also applies before
+/// matching: trim, and lowercase. A name empty after trimming, and a name
+/// longer than [`MAX_RELAYED_VALUE_LEN`], are refused SILENTLY — this is a
+/// fire-and-forget telemetry declaration on a path whose overriding constraint
+/// is that it never disrupts the caller.
+///
+/// # This SDK ships no adapter of its own
+///
+/// Unlike the Go, Python, TypeScript and Java SDKs, this crate exports no
+/// framework adapter, so nothing here calls this function. It exists for
+/// third-party integrations built on top of the crate. The `interceptors`
+/// module wraps LLM PROVIDER clients (Anthropic, OpenAI), which is a different
+/// dimension from the agent framework driving the SDK and deliberately not
+/// reported here.
+pub fn register_adapter(name: &str) {
+    let normalized = name.trim().to_lowercase();
+    if normalized.is_empty() || normalized.len() > MAX_RELAYED_VALUE_LEN {
+        return;
+    }
+    // Poison-recovering like every other lock in this module: a panic elsewhere
+    // must not make registration a permanent no-op.
+    adapter_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(normalized);
+}
+
+/// Apply the receiver's array bounds: at most [`MAX_FEATURES`] entries, none
+/// over [`MAX_FEATURE_BYTES`] bytes.
+///
+/// An over-long entry is DROPPED rather than truncated, deliberately differing
+/// from the receiver's own `BoundFeatures`. The receiver truncates because it is
+/// defending storage against arbitrary clients; here the entry is something this
+/// process declared about itself, and a truncated adapter name is a name nothing
+/// is running.
+fn bound_features(features: Vec<String>) -> Vec<String> {
+    features
+        .into_iter()
+        .filter(|f| f.len() <= MAX_FEATURE_BYTES)
+        .take(MAX_FEATURES)
+        .collect()
+}
+
+/// Render the registry as the `features` array for one ping.
+///
+/// A `BTreeSet` keeps it sorted, so the wire is deterministic and "which 32
+/// survive" is a defined answer rather than a hash-iteration accident.
+fn registered_features() -> Vec<String> {
+    let names: Vec<String> = adapter_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .cloned()
+        .collect();
+    bound_features(
+        names
+            .into_iter()
+            .map(|n| format!("{FEATURE_ADAPTER_PREFIX}{n}"))
+            .collect(),
+    )
+}
+
+/// Test-only: empty the registry and return what was there.
+#[cfg(test)]
+fn reset_adapter_registry_for_tests() -> std::collections::BTreeSet<String> {
+    let mut guard = adapter_registry().lock().unwrap_or_else(|e| e.into_inner());
+    std::mem::take(&mut *guard)
+}
+
+/// Test-only: restore a registry saved by [`reset_adapter_registry_for_tests`].
+#[cfg(test)]
+fn restore_adapter_registry_for_tests(previous: std::collections::BTreeSet<String>) {
+    *adapter_registry().lock().unwrap_or_else(|e| e.into_inner()) = previous;
+}
+
 const DEFAULT_CHECKPOINT_URL: &str = "https://checkpoint.getaxonflow.com/v1/ping";
 
 /// Stream classifications written to the telemetry payload. Only the
@@ -783,9 +918,11 @@ struct TelemetryPayload {
     /// The SDK's classification of its configured endpoint URL.
     deployment_mode: &'static str,
     endpoint_type: &'static str,
-    /// Always empty for this SDK; the field is a plugin dimension. Emitted as
-    /// `[]` rather than omitted to keep the wire shape stable.
-    features: Vec<&'static str>,
+    /// Adapter identifiers declared through [`register_adapter`]. Emitted as
+    /// `[]` rather than omitted — that wire shape is load-bearing, because the
+    /// receiver distinguishes "reported no features" from "does not report
+    /// them".
+    features: Vec<String>,
     instance_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<&'static str>,
@@ -840,7 +977,10 @@ impl HeartbeatContext {
             runtime_version: runtime_version_str(),
             deployment_mode: self.deployment_mode,
             endpoint_type: self.endpoint_type,
-            features: Vec::new(),
+            // The registry is the ONLY producer of this array. Read here rather
+            // than snapshotted in `from_env` so an adapter that registers after
+            // the client is built still reaches the next heartbeat.
+            features: registered_features(),
             instance_id: instance_id(),
             stream: self.stream,
             org_id: self.org_id.clone(),

@@ -320,6 +320,38 @@ The SDK includes a non-blocking background heartbeat that follows the AxonFlow t
 
 The gate is evaluated when a client is constructed and again on each SDK request, so a long-running service stays visible across the 7-day boundary. Evaluating it costs one in-process check; the `/health` probe and the ping run on a background task and never delay your call.
 
+### Declaring a framework adapter (`register_adapter`)
+
+If you are building a framework integration on top of this crate, you can declare it so aggregate adoption figures can tell adapter-driven usage apart from bare SDK usage. Without this they are indistinguishable: an adapter reports the same `sdk`, the same `sdk_version` and the same endpoint as any other client.
+
+```rust
+use axonflow_sdk_rust::register_adapter;
+
+register_adapter("my-framework");
+```
+
+**This crate ships no adapter of its own**, so nothing in it calls this — it exists for third-party integrations. (The `interceptors` module wraps LLM *provider* clients, which is a different dimension from the agent framework driving the SDK and is deliberately not reported here.)
+
+The name is added to the `features` array of the heartbeat that already fires, as `adapter:my-framework`. **It adds no network request**, and calling `register_adapter` does not itself send anything. It is idempotent and safe from any thread.
+
+The heartbeat fires on the client's **first outbound request**, not at construction, so anything registered before that request is on the very first ping. A name registered afterwards rides the next heartbeat.
+
+What is and is not collected:
+
+- **Collected:** the adapter name you pass, lowercased and trimmed.
+- **Not collected:** anything about what the adapter *does* — no prompts, no payloads, no tool names, no user identities, no configuration.
+
+Bounds, so a malformed call cannot damage the ping it rides on:
+
+- A name longer than **64 bytes** is **dropped whole**, never truncated — a truncated adapter name is a name nothing is running. A name that is empty after trimming is ignored.
+- The `features` array carries at most **32 entries**, none longer than **128 bytes**, mirroring the receiver's own bounds.
+
+The name is **not** validated against a list of known frameworks. The canonical vocabulary lives on the receiving service, which folds an unrecognised name into an `adapter:unknown` bucket while keeping the raw name on the row.
+
+### When the heartbeat fires
+
+It fires on the client's **first outbound request**, not at construction — so a client that is created and never used does not ping at all. At most one ping per machine per 7 days is delivered, and the cadence is held both by a stamp file and in memory, so a runtime that cannot write the stamp is still bounded (per process rather than per machine). If the checkpoint cannot be reached, the re-check interval doubles from 1 hour to a ceiling of 7 days and a single delivery resets it.
+
 `AXONFLOW_TELEMETRY=off` is the **sole opt-out lever** as of v0.2. There is no programmatic disable on the SDK config — the env-var-only pattern matches HashiCorp's `CHECKPOINT_DISABLE`, Docker, and Datadog Agent. Sandbox-mode clients (constructed via `AxonFlowConfig::sandbox(...)`) tag their pings with `stream="sandbox"` so analytics can distinguish dev/test usage from production heartbeat. `DO_NOT_TRACK` is intentionally not honored.
 
 ### The heartbeat contacts your platform's `/health` (new in 0.10.0)

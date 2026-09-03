@@ -53,8 +53,11 @@ pub use authzen::{
     AUTHZEN_PROFILE_HEADER, AUTHZEN_PROFILE_V1,
 };
 pub use client::AxonFlowClient;
+// Telemetry: declaring a framework adapter on the existing heartbeat. Performs
+// no I/O — see `heartbeat::register_adapter`.
 pub use config::{AxonFlowConfig, CacheConfig, Mode, RetryConfig};
 pub use error::AxonFlowError;
+pub use heartbeat::register_adapter;
 pub use pep::{
     has_request_redaction, CONTENT_TYPE_TEXT, DECIDE_PATH, GATEWAY_CONNECTOR_TAG,
     OBLIGATION_REDACT_PII, PHASE_REQUEST, PHASE_RESPONSE, REQUEST_REDACTION_PATH,

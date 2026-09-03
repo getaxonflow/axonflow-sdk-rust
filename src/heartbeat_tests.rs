@@ -46,6 +46,21 @@ struct TelemetryTestEnv {
     _guard: MutexGuard<'static, ()>,
     _stamp_dir: tempfile::TempDir,
     stamp_path: PathBuf,
+    /// The adapter registry as it was before this test, restored on drop.
+    ///
+    /// The registry is process-global BY DESIGN — an adapter registered
+    /// anywhere really is in use — which in a test binary is cross-test
+    /// pollution, and Rust runs tests in PARALLEL. Without this, a test that
+    /// registers an adapter leaks into any concurrent test asserting
+    /// `features == []`. That is not hypothetical: it is how this was found,
+    /// by `ping_carries_every_relayed_field_when_health_answers` failing with
+    /// `left: ["adapter:litellm"]`.
+    ///
+    /// Reset HERE rather than in the registry tests, for the same reason the
+    /// Java SDK uses an autodetected JUnit extension and the Python SDK an
+    /// autouse conftest fixture: the isolation has to hold for tests that have
+    /// never heard of the registry.
+    previous_adapters: std::collections::BTreeSet<String>,
 }
 
 impl TelemetryTestEnv {
@@ -68,12 +83,14 @@ impl TelemetryTestEnv {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(Some(stamp_path.clone()));
         reset_gate_for_tests();
+        let previous_adapters = reset_adapter_registry_for_tests();
         TELEMETRY_ARMED_FOR_TESTS.with(|armed| armed.set(true));
 
         Self {
             _guard: guard,
             _stamp_dir: dir,
             stamp_path,
+            previous_adapters,
         }
     }
 
@@ -113,6 +130,7 @@ impl TelemetryTestEnv {
 
 impl Drop for TelemetryTestEnv {
     fn drop(&mut self) {
+        restore_adapter_registry_for_tests(std::mem::take(&mut self.previous_adapters));
         TELEMETRY_ARMED_FOR_TESTS.with(|armed| armed.set(false));
         *STAMP_PATH_OVERRIDE
             .lock()
@@ -1551,8 +1569,15 @@ fn the_real_stamp_path_is_under_the_user_cache_dir() {
 // --- the two trigger sites, through the real public API ---
 
 #[tokio::test]
-async fn constructor_delivers_through_the_spawn_path() {
+async fn the_first_request_delivers_through_the_spawn_path() {
     // Covers the one line `heartbeat_pass_for_tests` replaces: the spawn.
+    //
+    // RENAMED FROM `constructor_delivers_through_the_spawn_path`, because the
+    // constructor no longer pings (axonflow-enterprise#3682): every framework
+    // adapter takes a client, so an adapter registering from its own
+    // constructor could never reach a constructor-time ping. The property under
+    // test is unchanged — the real public API reaches the real spawn — but the
+    // trigger it goes through is now the first outbound request.
     let env = TelemetryTestEnv::on();
     let server = MockServer::start().await;
     mount_health_json(
@@ -1561,11 +1586,30 @@ async fn constructor_delivers_through_the_spawn_path() {
     )
     .await;
     mount_checkpoint(&server, 200).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/connectors"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"connectors": []})),
+        )
+        .mount(&server)
+        .await;
     env.set("AXONFLOW_CHECKPOINT_URL", &checkpoint_url(&server));
 
-    let _client =
+    let client =
         crate::client::AxonFlowClient::new(crate::config::AxonFlowConfig::new(server.uri()))
             .expect("client");
+
+    // Constructing pinged NOTHING. Asserted, not assumed: without this the test
+    // below would pass equally for a constructor that still pinged, and the
+    // whole point of the change would be untested here.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        count_pings(&seen(&server).await),
+        0,
+        "constructing a client must not ping — the heartbeat is a claim about USAGE"
+    );
+
+    client.list_connectors().await.expect("connectors call");
 
     // The ping is spawned, so wait for it to land rather than asserting into
     // a race.
@@ -1596,6 +1640,8 @@ async fn a_request_re_triggers_the_heartbeat_after_the_guard_expires() {
     let client =
         crate::client::AxonFlowClient::new(crate::config::AxonFlowConfig::new(server.uri()))
             .expect("client");
+    // The FIRST request is what fires the heartbeat now, not the constructor.
+    client.list_connectors().await.expect("connectors call");
     await_ping(&server, 1).await;
 
     // A week later: the boundary this trigger site exists to catch. Both the
@@ -1633,9 +1679,11 @@ async fn a_request_does_not_ping_while_the_guard_is_warm() {
     let client =
         crate::client::AxonFlowClient::new(crate::config::AxonFlowConfig::new(server.uri()))
             .expect("client");
+    // The FIRST request fires the heartbeat; the four after it must not.
+    client.list_connectors().await.expect("connectors call");
     await_ping(&server, 1).await;
 
-    for _ in 0..5 {
+    for _ in 0..4 {
         client.list_connectors().await.expect("connectors call");
     }
     // Give any (incorrectly) spawned ping time to arrive before counting.
@@ -1873,4 +1921,195 @@ fn the_telemetry_path_builds_exactly_one_http_client() {
             "{file} builds {built} reqwest client(s), expected {expected}"
         );
     }
+}
+
+// ============================================================================
+// 6. The adapter registry (axonflow-enterprise#3682)
+// ============================================================================
+
+/// Empty the process-global registry for one test and restore it after.
+///
+/// The registry is global by design — an adapter registered anywhere really is
+/// in use — so without this a test that registers leaks into every later test's
+/// payload. Same reasoning as the Java SDK's autodetected JUnit extension and
+/// the Python SDK's autouse conftest fixture.
+struct RegistryGuard {
+    /// The SAME global lock `TelemetryTestEnv` takes.
+    ///
+    /// Rust runs tests in parallel, and the registry is process-global, so a
+    /// registry test without this lock races every wire test that asserts on
+    /// `features`. Holding it makes the two classes serialise.
+    _guard: MutexGuard<'static, ()>,
+    previous: std::collections::BTreeSet<String>,
+}
+
+impl RegistryGuard {
+    fn take() -> Self {
+        let guard = telemetry_lock();
+        Self {
+            _guard: guard,
+            previous: super::reset_adapter_registry_for_tests(),
+        }
+    }
+}
+
+impl Drop for RegistryGuard {
+    fn drop(&mut self) {
+        super::restore_adapter_registry_for_tests(std::mem::take(&mut self.previous));
+    }
+}
+
+#[test]
+fn features_is_empty_by_default() {
+    // The POSITIVE CONTROL for every absence assertion below: "features did not
+    // contain adapter:x" is only evidence if the mechanism works at all.
+    let _g = RegistryGuard::take();
+    assert!(super::registered_features().is_empty());
+}
+
+#[test]
+fn a_registered_adapter_reaches_the_features_array() {
+    let _g = RegistryGuard::take();
+    super::register_adapter("langchain");
+    assert_eq!(super::registered_features(), vec!["adapter:langchain"]);
+}
+
+#[test]
+fn an_unregistered_adapter_does_not() {
+    let _g = RegistryGuard::take();
+    super::register_adapter("langchain");
+    let features = super::registered_features();
+    assert!(!features.contains(&"adapter:langgraph".to_string()));
+    // Without this the assertion above is satisfied by an empty array.
+    assert_eq!(features, vec!["adapter:langchain"]);
+}
+
+#[test]
+fn names_are_lowercased_trimmed_deduplicated_and_sorted() {
+    let _g = RegistryGuard::take();
+    super::register_adapter("LangChain");
+    super::register_adapter("  langchain\t\n");
+    super::register_adapter("LANGCHAIN");
+    super::register_adapter("langgraph");
+    // NOT filtered: an SDK-side allowlist would be a second vocabulary that
+    // drifts from the receiver's.
+    super::register_adapter("some-framework-we-have-never-heard-of");
+
+    assert_eq!(
+        super::registered_features(),
+        vec![
+            "adapter:langchain",
+            "adapter:langgraph",
+            "adapter:some-framework-we-have-never-heard-of",
+        ]
+    );
+}
+
+#[test]
+fn an_unusable_name_is_refused_silently() {
+    // A fire-and-forget telemetry declaration must never disrupt the caller.
+    let _g = RegistryGuard::take();
+    for bad in ["", "   ", "\t\n"] {
+        super::register_adapter(bad);
+    }
+    assert!(super::registered_features().is_empty());
+}
+
+#[test]
+fn the_relayed_value_cap_keeps_64_bytes_and_drops_65_whole() {
+    let _g = RegistryGuard::take();
+    super::register_adapter(&"a".repeat(64));
+    assert_eq!(
+        super::registered_features(),
+        vec![format!("adapter:{}", "a".repeat(64))]
+    );
+
+    super::reset_adapter_registry_for_tests();
+    super::register_adapter(&"a".repeat(65));
+    assert!(
+        super::registered_features().is_empty(),
+        "a truncated adapter name is a name nothing is running, and the receiver \
+         would record it as a real value"
+    );
+}
+
+#[test]
+fn the_cap_counts_bytes_not_characters() {
+    // 33 x U+00E9 is 33 CHARACTERS and 66 BYTES. Rust's `str::len()` is already
+    // bytes, so this SDK gets the right answer for free — but the fixture is
+    // kept because the sibling SDKs all had to write the distinction out, and a
+    // future refactor to `chars().count()` would be silent without it.
+    let _g = RegistryGuard::take();
+    let name = "é".repeat(33);
+    assert!(
+        name.chars().count() <= 64,
+        "fixture premise: under the cap by CHARACTERS"
+    );
+    assert!(name.len() > 64, "fixture premise: over the cap by BYTES");
+
+    super::register_adapter(&name);
+    assert!(super::registered_features().is_empty());
+}
+
+#[test]
+fn the_features_array_is_bounded_to_32_entries() {
+    let _g = RegistryGuard::take();
+    for i in 0..40 {
+        super::register_adapter(&format!("{i:02}"));
+    }
+    let features = super::registered_features();
+    // The LITERAL 32, not MAX_FEATURES: asserting against the constant is a
+    // tautology, because a mutant moves both sides of the comparison. This is
+    // the mistake that let the Java SDK's equivalent mutant survive.
+    assert_eq!(features.len(), 32);
+    assert_eq!(super::MAX_FEATURES, 32);
+    // Sorted-then-truncated, so "which 32 survive" is a defined answer rather
+    // than a hash-iteration accident.
+    assert_eq!(features[0], "adapter:00");
+    assert_eq!(features[31], "adapter:31");
+}
+
+#[test]
+fn bound_features_drops_an_overlong_entry_whole() {
+    // Tested DIRECTLY on `bound_features`, and here is why: `register_adapter`
+    // already refuses a name over 64 bytes, so the longest entry it can emit is
+    // `"adapter:".len() + 64 == 72` — well under 128. A test driven through the
+    // registry could not express this defect and would read as disproof of a
+    // bound that was never exercised.
+    assert!("adapter:".len() + super::MAX_RELAYED_VALUE_LEN <= super::MAX_FEATURE_BYTES);
+    assert_eq!(super::MAX_FEATURE_BYTES, 128);
+
+    let within = format!("adapter:{}", "b".repeat(128 - "adapter:".len()));
+    let over = format!("{within}b");
+    assert_eq!(within.len(), 128);
+    assert_eq!(
+        super::bound_features(vec![within.clone(), over]),
+        vec![within]
+    );
+}
+
+#[tokio::test]
+async fn a_registered_adapter_reaches_the_wire() {
+    // End to end through the real ping path and a real socket: the unit tests
+    // above assert on the rendered array, this asserts on the bytes that left.
+    //
+    // No RegistryGuard here — TelemetryTestEnv already resets and restores the
+    // registry, and taking the lock twice would deadlock. One isolation
+    // mechanism, not two.
+    let env = TelemetryTestEnv::on();
+    let server = MockServer::start().await;
+    mount_health_json(&server, serde_json::json!({"tier": "Community"})).await;
+    mount_checkpoint(&server, 200).await;
+    env.set("AXONFLOW_CHECKPOINT_URL", &checkpoint_url(&server));
+
+    super::register_adapter("litellm");
+    assert!(heartbeat_pass_for_tests(&server.uri(), &Mode::Production).await);
+    await_ping(&server, 1).await;
+
+    let body = only_ping_body(&server).await;
+    assert_eq!(
+        body["features"],
+        serde_json::json!(["adapter:litellm"]),
+        "the registry is the only producer of this array"
+    );
 }

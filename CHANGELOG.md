@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`register_adapter(name)` declares a framework adapter on the existing
+  heartbeat (axonflow-enterprise#3682).** A framework integration built on this
+  crate was previously indistinguishable from bare SDK use on every telemetry
+  dimension: same `sdk`, same `sdk_version`, same endpoint.
+  `register_adapter("langchain")` adds `adapter:langchain` to the `features`
+  array of the ping that already fires. **No new network request, no new
+  configuration surface, no second endpoint.** Idempotent and thread-safe. The
+  name is lowercased and trimmed and otherwise sent as given — deliberately NOT
+  checked against a list of known frameworks, because the canonical vocabulary
+  lives on the receiver, which preserves an unrecognised name on the row while
+  bucketing it for reporting.
+
+  **This crate ships no adapter of its own**, so nothing in it calls this — it
+  exists for third-party integrations. That is a census result, not an
+  omission: unlike the Go, Python, TypeScript and Java SDKs, this crate exports
+  no framework adapter. The `interceptors` module wraps LLM *provider* clients
+  (Anthropic, OpenAI), which is a different dimension from the agent framework
+  driving the SDK and is deliberately not reported on this field.
+
+  This is the FIRST producer of `features` here — the array was a hardcoded `[]`.
+
+### Changed
+
+- **The telemetry heartbeat now fires on the client's first outbound request
+  rather than at client construction.** A client that is constructed and never
+  used no longer pings — a heartbeat is a claim about usage.
+
+  The reason is `register_adapter`, and it is a cross-SDK change made uniformly:
+  every framework adapter takes a client, so an adapter cannot exist until the
+  constructor has returned; pinging there meant an adapter registering from its
+  own constructor could never reach the first ping, and the 7-day stamp then
+  suppressed the next one for a week. For a short-lived process the adapter was
+  never reported at all.
+
+  Delivery is unaffected here: the ping was already spawned onto the tokio
+  runtime rather than run inline, and the in-process gate, the failure backoff
+  and the 7-day cadence are all unchanged.
+
+- **The `features` array is bounded at 32 entries of 128 bytes**, mirroring the
+  receiver's own limits, and an over-long entry is dropped whole rather than
+  truncated. The existing 64-byte `MAX_RELAYED_VALUE_LEN` bound now also covers
+  adapter names, so every value this SDK puts on the wire that it did not author
+  goes through one bound with one meaning.
+
 ## [0.9.0] - 2026-09-01: AuthZEN-native authorization surface
 
 ### Added
