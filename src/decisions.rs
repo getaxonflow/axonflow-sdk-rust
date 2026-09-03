@@ -25,10 +25,36 @@ use tracing;
 impl AxonFlowClient {
     /// Fetches the full explanation for a previously-made policy decision.
     ///
-    /// The caller must either own the decision (X-User-Email match) or
-    /// belong to the same tenant as the decision (X-Tenant-ID match).
-    /// Returns an error wrapping HTTP 404 when the decision is past the
-    /// tier's audit retention window.
+    /// # Which decisions this returns (platform #2922)
+    ///
+    /// The read is scoped to the per-user identity the caller presents, NOT to
+    /// the tenant credential. On an enterprise stack:
+    ///
+    /// - a tenant-wide role (admin, owner, policy_admin) explains any decision
+    ///   in the tenant;
+    /// - any other identity (developer, viewer) explains only the decisions
+    ///   attributed to it — another user's decision answers exactly like a
+    ///   decision that does not exist;
+    /// - a caller presenting NO identity explains nothing at all. Every call
+    ///   answers not-found, whatever the decision id.
+    ///
+    /// Community and Community-SaaS deployments are single-operator and read
+    /// tenant-wide with no identity needed.
+    ///
+    /// Present the identity with
+    /// [`AxonFlowConfig::user_token`](crate::AxonFlowConfig::user_token),
+    /// [`explain_decision_as`](Self::explain_decision_as) for one call, or
+    /// [`as_user`](crate::AxonFlowClient::as_user) for a client bound to one
+    /// person.
+    ///
+    /// # Telling the misses apart, as far as the platform allows
+    ///
+    /// A miss returns [`AxonFlowError::ReadScope`] whenever the platform's
+    /// `X-Axonflow-Read-Scope` header says the caller's scope decided it, so
+    /// "the platform resolved no identity for you" stops being indistinguishable
+    /// from "past retention". It does NOT separate "not yours" from "not there":
+    /// under own-rows the platform answers both with the same 404 on purpose, so
+    /// that a miss cannot be used to probe for another user's rows.
     ///
     /// # Example
     ///
@@ -47,6 +73,27 @@ impl AxonFlowClient {
         &self,
         decision_id: &str,
     ) -> Result<DecisionExplanation, AxonFlowError> {
+        self.explain_decision_as(decision_id, None).await
+    }
+
+    /// Fetches a decision explanation as a specific per-user identity.
+    ///
+    /// Overrides the client-wide `user_token` for THIS call only. Use it when
+    /// one process acts on behalf of several people. `Some("")` is not an
+    /// identity: it makes this read explicitly unidentified rather than falling
+    /// back to the client-wide one — a distinction that has to exist, because
+    /// "unidentified" is a state the platform treats as different from every
+    /// other.
+    ///
+    /// For a process acting for several people across MANY methods, prefer
+    /// [`as_user`](crate::AxonFlowClient::as_user): this method exists only on
+    /// the reads, while a derived client reaches every method with no carve-out.
+    #[tracing::instrument(skip(self, user_token))]
+    pub async fn explain_decision_as(
+        &self,
+        decision_id: &str,
+        user_token: Option<&str>,
+    ) -> Result<DecisionExplanation, AxonFlowError> {
         if decision_id.is_empty() {
             return Err(AxonFlowError::ConfigError(
                 "decision_id is required".to_string(),
@@ -59,13 +106,40 @@ impl AxonFlowClient {
         let encoded = utf8_percent_encode(decision_id, PATH_SEGMENT).to_string();
         let url = format!("{}/api/v1/decisions/{}/explain", self.endpoint(), encoded);
 
-        let resp = self.checked_get(&url).await?;
+        let resp = self.raw_get_as(&url, user_token).await?;
+
+        // A scoped miss reports WHY it missed. Only 404 is interpreted: the
+        // scope header is stamped before the handler writes its status, so it
+        // also rides a 500 from further down the handler, and explaining a
+        // server fault as a scoping outcome would be exactly the
+        // confidently-wrong diagnosis this type exists to prevent.
+        if resp.status().as_u16() == 404 {
+            if let Some(refusal) = crate::read_identity::read_scope_refusal(
+                "decision",
+                Some(decision_id),
+                crate::read_identity::ReadScope::of(&resp),
+                404,
+            ) {
+                return Err(AxonFlowError::ReadScope(Box::new(refusal)));
+            }
+        }
+        let resp = AxonFlowClient::check_status(resp).await?;
         let body = resp.text().await?;
         let parsed: DecisionExplanation = serde_json::from_str(&body)?;
         Ok(parsed)
     }
 
-    /// Lists recent policy decisions for the caller's tenant.
+    /// Lists the recent policy decisions VISIBLE TO THE CALLER.
+    ///
+    /// # Whose decisions come back (platform #2922)
+    ///
+    /// Not the tenant's — the caller's SCOPE. On an enterprise stack a
+    /// tenant-wide role lists the whole tenant, any other identity lists only
+    /// its own rows, and a caller presenting NO identity lists nothing
+    /// whatsoever. That last case used to return an empty `Vec`, which reads as
+    /// "your tenant has made no decisions" and is a different statement from
+    /// what happened; it now returns [`AxonFlowError::ReadScope`] instead. A
+    /// genuinely empty own-rows or tenant-wide read is NOT an error.
     ///
     /// Returns the slim 5-field [`DecisionSummary`] page; the platform
     /// applies a tier-gated cap (5/24h on Free + Community, 100/30d on
@@ -100,6 +174,20 @@ impl AxonFlowClient {
         &self,
         opts: ListDecisionsOptions,
     ) -> Result<Vec<DecisionSummary>, AxonFlowError> {
+        self.list_decisions_as(opts, None).await
+    }
+
+    /// Lists the decisions visible to a specific per-user identity.
+    ///
+    /// Overrides the client-wide `user_token` for THIS call only. See
+    /// [`explain_decision_as`](Self::explain_decision_as) for the semantics, and
+    /// [`as_user`](crate::AxonFlowClient::as_user) for the shape to prefer when
+    /// one process acts for several people across many methods.
+    pub async fn list_decisions_as(
+        &self,
+        opts: ListDecisionsOptions,
+        user_token: Option<&str>,
+    ) -> Result<Vec<DecisionSummary>, AxonFlowError> {
         let mut url = format!("{}/api/v1/decisions", self.endpoint());
         let qs = build_decisions_query(&opts);
         if !qs.is_empty() {
@@ -110,7 +198,9 @@ impl AxonFlowClient {
         // raw_get bypasses check_status so we can branch on 429 BEFORE
         // it turns into a generic ApiError. Other failures fall through
         // to the same shape check_status would have produced.
-        let resp = self.raw_get(&url).await?;
+        let resp = self.raw_get_as(&url, user_token).await?;
+        let scope = crate::read_identity::ReadScope::of(&resp);
+        let status = resp.status().as_u16();
         if resp.status().as_u16() == 429 {
             let body = resp.text().await?;
             return match serde_json::from_str::<RateLimitEnvelope>(&body) {
@@ -135,6 +225,18 @@ impl AxonFlowClient {
             decisions: Vec<DecisionSummary>,
         }
         let parsed: ListResponse = serde_json::from_str(&body)?;
+
+        // An empty page under ReadScope::None is the fail-closed shape, not a
+        // finding: the platform returned zero rows because it resolved no
+        // identity to scope on, so the page says nothing about what exists.
+        if let Some(refusal) = crate::read_identity::refuse_vacuous_scoped_page(
+            "decisions",
+            scope,
+            status,
+            parsed.decisions.len(),
+        ) {
+            return Err(AxonFlowError::ReadScope(Box::new(refusal)));
+        }
         Ok(parsed.decisions)
     }
 }

@@ -96,6 +96,7 @@ impl AxonFlowClient {
 
         let http_client = reqwest::Client::builder()
             .timeout(config.timeout)
+            .redirect(Self::redirect_policy(&config.endpoint))
             .default_headers(headers.clone())
             .danger_accept_invalid_certs(accept_invalid)
             .pool_max_idle_per_host(5)
@@ -105,6 +106,7 @@ impl AxonFlowClient {
 
         let map_http_client = reqwest::Client::builder()
             .timeout(config.map_timeout)
+            .redirect(Self::redirect_policy(&config.endpoint))
             .default_headers(headers)
             .danger_accept_invalid_certs(accept_invalid)
             .pool_max_idle_per_host(5)
@@ -476,12 +478,156 @@ impl AxonFlowClient {
     /// path — including its `/health` probe — from re-entering this gate.
     /// `no_http_send_outside_the_dispatch_funnel` fails the build if a new
     /// call site bypasses this function.
+    /// A client identical to this one but presenting `user_token`.
+    ///
+    /// The shape to reach for when one process acts on behalf of several people
+    /// — a gateway, a bot. Unlike the `*_as` read methods, which only the reads
+    /// have, this reaches EVERY method: there is no carve-out to remember and no
+    /// path on which the identity silently widens back to the process's own.
+    ///
+    /// ```no_run
+    /// # use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, ListDecisionsOptions};
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = AxonFlowClient::new(AxonFlowConfig::new("http://localhost:8080"))?;
+    /// let for_alice = client.as_user("alice-token");
+    /// let rows = for_alice.list_decisions(ListDecisionsOptions::default()).await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// The returned client SHARES this one's `reqwest::Client`s and cache —
+    /// `reqwest::Client` is an `Arc` internally, so cloning it shares the
+    /// connection pool, the redirect policy and every TLS and proxy setting.
+    /// Deriving one per request is therefore cheap, and the derivation cannot
+    /// quietly lose an egress proxy. Only the identity differs; this client is
+    /// not modified.
+    ///
+    /// Sharing the transport is safe here in a way it was NOT in the Python
+    /// sibling: the identity is resolved from `self.config` at request time by
+    /// `with_identity`, not captured in a hook bound to the client that built
+    /// it. A derived client therefore reads its OWN token by construction.
+    ///
+    /// An empty token returns a client presenting no identity at all, which on
+    /// an enterprise stack reads nothing (see
+    /// [`ReadScope::None`](crate::ReadScope::None)).
+    pub fn as_user(&self, user_token: impl Into<String>) -> Self {
+        let token = user_token.into();
+        let trimmed = token.trim();
+        let mut config = self.config.clone();
+        config.user_token = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        Self {
+            config,
+            http_client: self.http_client.clone(),
+            map_http_client: self.map_http_client.clone(),
+            cache: self.cache.clone(),
+        }
+    }
+
+    /// Redirects may not leave the configured origin.
+    ///
+    /// This is the second half of "the identity is sent to the configured
+    /// endpoint and nowhere else". `with_identity` decides what to stamp on the
+    /// FIRST request; reqwest then carries the headers through any redirect it
+    /// follows, and its sensitive-header list — the one that drops
+    /// `Authorization`, `Cookie` and `Proxy-Authorization` on a host change — is
+    /// FIXED and does not include a custom header. Measured in the sibling SDKs
+    /// on `net/http` and on Node's `fetch`: the redirect target received the
+    /// tenant credential stripped and the per-user one intact, which is the
+    /// wrong one to lose.
+    ///
+    /// A cross-origin redirect is therefore STOPPED rather than followed. That
+    /// is a small behaviour change and the right one for this client: it talks
+    /// to ONE configured endpoint, so a redirect leaving that origin is already
+    /// anomalous, and the caller sees the 3xx rather than a request that quietly
+    /// carried a person's credential somewhere they never named. Same-origin
+    /// redirects are followed as before, up to reqwest's usual bound.
+    fn redirect_policy(endpoint: &str) -> reqwest::redirect::Policy {
+        let configured = url::Url::parse(endpoint).ok();
+        reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("stopped after 10 redirects");
+            }
+            match &configured {
+                Some(origin) if crate::read_identity::same_origin(attempt.url(), origin) => {
+                    attempt.follow()
+                }
+                // Unparseable endpoint, or an off-origin hop: stop. Stopping
+                // returns the 3xx to the caller rather than erroring, so an
+                // ordinary redirect to another host degrades to a visible
+                // non-2xx instead of a silent credential leak.
+                _ => attempt.stop(),
+            }
+        })
+    }
+
+    /// The SDK's one send site — and therefore its one IDENTITY site.
+    ///
+    /// The read-path per-user identity is stamped here rather than as a default
+    /// header, because it must be conditional on the request's ORIGIN: the
+    /// identity is sent to the configured endpoint and nowhere else. See
+    /// [`crate::read_identity`] for why that matters (reqwest strips
+    /// `Authorization` across a host change and its list is fixed; a custom
+    /// header is not on it), and `redirect_policy` for the second half of the
+    /// guarantee.
+    ///
+    /// Per-call identity travels on the RequestBuilder rather than here, via
+    /// [`Self::with_identity`], so a caller acting for several people does not
+    /// need a client each.
     async fn dispatch(
         &self,
         req: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, reqwest::Error> {
         maybe_send_heartbeat(&self.config.endpoint, &self.config.mode);
         req.send().await
+    }
+
+    /// Stamp the per-user identity on a request, if there is one and the request
+    /// is bound for the configured endpoint.
+    ///
+    /// `override_token` is the per-call identity: `None` means "this call said
+    /// nothing", so the client-wide value applies. `Some("")` is a caller
+    /// deliberately making one read unidentified and must NOT fall back —
+    /// "unidentified" is a state the platform treats as different from every
+    /// other (see [`crate::read_identity::ReadScope::None`]).
+    pub(crate) fn with_identity(
+        &self,
+        req: reqwest::RequestBuilder,
+        override_token: Option<&str>,
+        url: &str,
+    ) -> reqwest::RequestBuilder {
+        let token = match override_token {
+            Some(explicit) => explicit.trim(),
+            None => self.config.user_token.as_deref().unwrap_or("").trim(),
+        };
+        if token.is_empty() {
+            // Never send an empty header. To the platform a present-but-empty
+            // X-User-Token is still an absent one, but sending it advertises an
+            // identity mechanism the caller is not using, and it is one refactor
+            // away from a present-but-invalid token, which is a hard 401.
+            return req;
+        }
+        let (Ok(target), Ok(configured)) =
+            (url::Url::parse(url), url::Url::parse(&self.config.endpoint))
+        else {
+            // An unparseable endpoint is not a licence to send the credential
+            // anyway.
+            return req;
+        };
+        if !crate::read_identity::same_origin(&target, &configured) {
+            return req;
+        }
+        match reqwest::header::HeaderValue::from_str(token) {
+            Ok(mut value) => {
+                // Marked sensitive so it is redacted from reqwest's own header
+                // Debug output, the way the license key already is.
+                value.set_sensitive(true);
+                req.header(crate::read_identity::HEADER_USER_TOKEN, value)
+            }
+            Err(_) => req,
+        }
     }
 
     pub(crate) async fn checked_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
@@ -509,8 +655,23 @@ impl AxonFlowClient {
     /// on specific status codes (e.g. parse a 429 V1 upgrade envelope into
     /// [`AxonFlowError::RateLimited`]) before falling back to the generic
     /// error path.
-    pub(crate) async fn raw_get(&self, url: &str) -> Result<reqwest::Response, AxonFlowError> {
-        Ok(self.dispatch(self.http_client.get(url)).await?)
+    /// GET without status translation, carrying a per-call read identity.
+    ///
+    /// Replaced the old `raw_get`, whose one caller (`list_decisions`) now has
+    /// to pass an identity: a wrapper that defaulted it to `None` would be a
+    /// second, quieter way to make an unidentified read, which is the state
+    /// this whole surface exists to make visible.
+    ///
+    /// `None` means "this call said nothing", so the client-wide identity
+    /// applies; `Some("")` is a deliberate unidentified read. See
+    /// [`Self::with_identity`].
+    pub(crate) async fn raw_get_as(
+        &self,
+        url: &str,
+        user_token: Option<&str>,
+    ) -> Result<reqwest::Response, AxonFlowError> {
+        let req = self.with_identity(self.http_client.get(url), user_token, url);
+        Ok(self.dispatch(req).await?)
     }
 
     /// Crate-internal POST of an already-encoded body with per-request headers,
@@ -550,7 +711,9 @@ impl AxonFlowClient {
         Self::check_status(resp).await
     }
 
-    async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, AxonFlowError> {
+    pub(crate) async fn check_status(
+        resp: reqwest::Response,
+    ) -> Result<reqwest::Response, AxonFlowError> {
         if resp.status().is_success() {
             Ok(resp)
         } else {
@@ -659,5 +822,99 @@ impl AxonFlowClient {
                 message: body,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod read_identity_tests {
+    use crate::read_identity::HEADER_USER_TOKEN;
+    use crate::{AxonFlowClient, AxonFlowConfig};
+
+    fn client_for(endpoint: &str, token: Option<&str>) -> AxonFlowClient {
+        AxonFlowClient::new(AxonFlowConfig {
+            endpoint: endpoint.to_string(),
+            user_token: token.map(str::to_string),
+            ..AxonFlowConfig::new(endpoint)
+        })
+        .expect("client")
+    }
+
+    /// What `with_identity` stamped, for a request to `url`.
+    ///
+    /// Built from the client's OWN transport rather than a fresh
+    /// `reqwest::Client`, for two reasons: it is what production does, so the
+    /// default headers and configuration are the real ones; and
+    /// `the_telemetry_path_builds_exactly_one_http_client` counts transports
+    /// constructed in this FILE — it reads the source text, so a `#[cfg(test)]`
+    /// module trips it even though the client never ships. That guard exists to
+    /// stop a second transport with its own opinions about timeouts, TLS and
+    /// pooling, and a test is not a licence to add one.
+    fn stamped(client: &AxonFlowClient, url: &str, override_token: Option<&str>) -> Option<String> {
+        let req = client.with_identity(client.http_client.get(url), override_token, url);
+        req.build()
+            .expect("request")
+            .headers()
+            .get(HEADER_USER_TOKEN)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    }
+
+    /// The ORIGIN guard on the stamping side, exercised on its own.
+    ///
+    /// It exists as defence in depth beside `redirect_policy`, and a mutation
+    /// run proved why it needs its own test: with only the integration tests,
+    /// deleting this guard changed NOTHING observable, because the redirect
+    /// policy already stopped every off-origin hop before a request could be
+    /// built for one. A doubly-guarded property makes a single-guard mutant
+    /// survive — so the inner guard is asserted here, directly, where the outer
+    /// one cannot stand in for it.
+    ///
+    /// It is not redundant: any future method that takes a caller-supplied URL
+    /// rather than deriving one from `endpoint()` would reach the transport
+    /// without passing the redirect policy at all.
+    #[test]
+    fn the_identity_is_stamped_only_for_the_configured_origin() {
+        let client = client_for("http://localhost:8080", Some("SENTINEL"));
+
+        assert_eq!(
+            stamped(&client, "http://localhost:8080/api/v1/decisions", None).as_deref(),
+            Some("SENTINEL"),
+            "the configured origin must carry the identity"
+        );
+        for elsewhere in [
+            "http://elsewhere.invalid/api/v1/decisions", // different host
+            "http://localhost:9999/api/v1/decisions",    // different port
+            "https://localhost:8080/api/v1/decisions",   // different scheme
+        ] {
+            assert_eq!(
+                stamped(&client, elsewhere, None),
+                None,
+                "{elsewhere} is not the configured origin and must not receive the identity"
+            );
+        }
+    }
+
+    /// An unparseable configured endpoint is not a licence to send the
+    /// credential anyway — the guard fails CLOSED, not open.
+    #[test]
+    fn an_unparseable_endpoint_sends_no_identity() {
+        let client = client_for("not a url", Some("SENTINEL"));
+        assert_eq!(stamped(&client, "http://localhost:8080/x", None), None);
+    }
+
+    /// `Some("")` is a caller deliberately making one read unidentified and must
+    /// not fall back to the client-wide value; `None` means "this call said
+    /// nothing" and must.
+    #[test]
+    fn an_explicit_empty_override_does_not_fall_back() {
+        let client = client_for("http://localhost:8080", Some("CLIENT-WIDE"));
+        let url = "http://localhost:8080/api/v1/decisions";
+
+        assert_eq!(stamped(&client, url, None).as_deref(), Some("CLIENT-WIDE"));
+        assert_eq!(
+            stamped(&client, url, Some("PER-CALL")).as_deref(),
+            Some("PER-CALL")
+        );
+        assert_eq!(stamped(&client, url, Some("   ")), None);
     }
 }
