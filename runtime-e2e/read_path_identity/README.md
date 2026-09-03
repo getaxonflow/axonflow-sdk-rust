@@ -34,6 +34,7 @@ decisions - and `explain` answering `404` for ids that plainly existed.
 | 8 | `as_user` | A derived client must be scoped to the identity it was derived FOR. The Python sibling shipped exactly the bug this catches: a derived client silently keeping the ORIGINAL identity |
 | 9 | No leak | The token must appear in **no** request reaching the telemetry collector this driver hosts, and the step **fails if the collector received nothing** |
 | 10 | Observable | The orchestrator must have **recorded** the unscoped read |
+| 11 | Non-read routes | A valid identity reaches `list_connectors` (**control**); a malformed one is refused **401** there |
 
 ## Three traps this driver exists to not fall into
 
@@ -73,5 +74,14 @@ export AXONFLOW_AGENT_URL=http://localhost:8080
 Env: `AXONFLOW_AGENT_URL`, `AXONFLOW_CLIENT_ID`, `AXONFLOW_CLIENT_SECRET`,
 `JWT_SECRET` (or `AXONFLOW_JWT_SECRET`). Optional `AXONFLOW_ORCH_CONTAINER`
 (default `axonflow-orchestrator`) for step 10.
+
+**Step 11 is round 2's step.** The identity is stamped in `dispatch`, so it
+rides every request rather than only the two role-scoped reads - which is what
+the other four SDKs already did, and what `as_user`'s "reaches EVERY method"
+promise requires. It carries a control leg on purpose: a step that only
+asserted the 401 would pass identically on a stack where `list_connectors` is
+simply down, and would then report an outage as an access-control property.
+Verified falsifiable - against the pre-round-2 SDK the control passes and the
+refusal leg FAILS, because the identity never reached that route.
 
 Exits non-zero on the first failed assertion.

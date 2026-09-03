@@ -479,5 +479,59 @@ async fn main() {
         )),
     }
 
+    // ================================================ 11. THE NON-READ ROUTES
+    // Round 2's behaviour change, asserted on the live platform rather than
+    // claimed in a doc comment.
+    //
+    // The identity is stamped in `dispatch`, so it now rides EVERY request, not
+    // just the two role-scoped reads. That is the shape the other four SDKs
+    // already had, and it has a consequence the README states and this step is
+    // what makes that statement evidence: the agent VALIDATES X-User-Token on
+    // every route it proxies, so a bad identity turns an ordinary non-read call
+    // into a 401 instead of merely unscoping a read.
+    //
+    // Both directions are checked. A step that only asserted the 401 would pass
+    // just as happily on a stack where `list_connectors` is broken for
+    // everyone, and would then be reporting an outage as a security property.
+    let connectors_as_dev_a = client(&endpoint, &client_id, &secret, Some(&dev_a))
+        .list_connectors()
+        .await;
+    if let Err(e) = &connectors_as_dev_a {
+        fail(&format!(
+            "step 11: list_connectors failed for a VALID identity ({e}). This is the control: \
+             without it, the refusal asserted below would hold on a stack where the route is \
+             simply down, and an outage would read as an access-control property"
+        ));
+    }
+    println!(
+        "step 11 PASS (control): a non-read route succeeds under a valid identity, so it is \
+         reachable and the refusal below is about the identity"
+    );
+
+    match client(&endpoint, &client_id, &secret, Some(malformed))
+        .list_connectors()
+        .await
+    {
+        Err(AxonFlowError::ApiError { status: 401, message }) => {
+            if message.contains(malformed) {
+                fail("step 11: the platform echoed the rejected credential back in its error body");
+            }
+            println!(
+                "step 11 PASS: a non-read route is refused 401 under a malformed identity — the \
+                 identity reaches every proxied route, and a stale token fails CLOSED there \
+                 rather than silently widening to the process's own authority"
+            );
+        }
+        Err(other) => fail(&format!(
+            "step 11: want a 401 from the non-read route under a malformed identity, got {other}"
+        )),
+        Ok(_) => fail(
+            "step 11: a malformed identity read a non-read route SUCCESSFULLY. Either the \
+             identity is not reaching that route — the round-2 defect, in which case a client \
+             derived with as_user runs it as the PROCESS — or the platform is not validating it \
+             there. Both are reportable; neither is a pass",
+        ),
+    }
+
     println!("\nALL PASS: read-path identity verified end to end through the Rust SDK runtime");
 }
