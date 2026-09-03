@@ -386,6 +386,27 @@ mutant_it "the redirect policy dropped from the MAP transport" \
   '        let map_http_client = reqwest::Client::builder()
             .timeout(config.map_timeout)'
 
+# The identity dropped from the cache key. A derived client shares the parent's
+# Arc<Cache> by design, so without the identity in the key two derived clients
+# making the same call hash to ONE entry and the second is handed the first
+# one's governed response - a cross-user data leak with no request made on the
+# second caller's behalf at all.
+mutant_it "the read identity dropped from the cache key" \
+  "two_derived_clients_do_not_share_a_cached_response" \
+  '        self.config
+            .user_token
+            .as_deref()
+            .unwrap_or("")
+            .hash(&mut hasher);' \
+  '        "".hash(&mut hasher);'
+
+# The other direction: a key that never matches is a disabled cache wearing a
+# fix's name, and it would satisfy the leak test above.
+mutant_it "the cache key made unique per call" \
+  "one_identity_asking_twice_still_hits_the_cache" \
+  '        format!("{:x}", hasher.finish())' \
+  '        format!("{:x}-{:?}", hasher.finish(), std::time::Instant::now())'
+
 # set_sensitive is what keeps the credential out of tracing spans and panic
 # messages; nothing about the wire changes when it goes, so only a Debug
 # assertion can see it.

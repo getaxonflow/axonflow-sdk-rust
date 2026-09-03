@@ -266,15 +266,33 @@ async fn identities_seen_by_every_route(
     client: &AxonFlowClient,
     server: &MockServer,
 ) -> Vec<String> {
-    let _ = client.list_connectors().await; // http GET
-    let _ = client.get_plan_status("p1").await; // MAP GET
-    let _ = client.execute_plan("p1", None).await; // http POST
-    let _ = client.cancel_plan("p1", None).await; // MAP POST
+    let _ = client.list_connectors().await; // http GET        -> checked_get
+    let _ = client.get_plan_status("p1").await; // MAP GET     -> checked_map_get
+    let _ = client.execute_plan("p1", None).await; // http POST -> dispatch direct
+    let _ = client.cancel_plan("p1", None).await; // MAP POST   -> dispatch direct
+                                                  // The two remaining transport helpers, so every one of the six is driven by
+                                                  // this test rather than four of them standing in for all six.
+    let _ = client.get_hitl_stats().await; // http GET          -> checked_get
+    let _ = client
+        .create_hitl_request(axonflow_sdk_rust::HITLCreateInput {
+            client_id: "org".into(),
+            original_query: "q".into(),
+            request_type: "mcp-query".into(),
+            ..Default::default()
+        })
+        .await; // http POST                                    -> checked_post_json
+    let _ = client
+        .evaluate(axonflow_sdk_rust::authzen::AuthZenRequest::evaluating(
+            axonflow_sdk_rust::authzen::AuthZenSubject::new("gateway", "g1"),
+            axonflow_sdk_rust::authzen::AuthZenAction::new("llm.completion"),
+            axonflow_sdk_rust::authzen::AuthZenResource::new("llm", "llm"),
+        ))
+        .await; // http POST, pre-encoded body                  -> raw_post_json_bytes
 
     let seen = server.received_requests().await.unwrap();
     assert_eq!(
         seen.len(),
-        4,
+        7,
         "precondition: all four routes must have been dialled, or this test asserts nothing about \
          the ones that were not"
     );
@@ -309,6 +327,21 @@ async fn server_answering_every_route() -> MockServer {
     Mock::given(method("POST"))
         .and(path("/api/v1/plan/p1/cancel"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"plan_id": "p1"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/hitl/stats"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/hitl/queue"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/access/evaluation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"decision": false})))
         .mount(&server)
         .await;
     server
@@ -349,6 +382,109 @@ async fn a_client_wide_identity_reaches_the_non_read_routes_too() {
              {seen:?})"
         );
     }
+}
+
+#[tokio::test]
+async fn two_derived_clients_do_not_share_a_cached_response() {
+    // The defect the H1 fix created, and the reason a fix needs its own review
+    // rather than its own author's confidence.
+    //
+    // Once the identity rides EVERY request, /api/request carries it too — and
+    // `as_user` shares the parent's `Arc<Cache>` on purpose, because deriving a
+    // client per request must not cost a cache. The key hashed the request
+    // type, the query, the write-path `user_token` BODY field and the context,
+    // and nothing about the identity the request would actually present. So two
+    // derived clients making the same call hashed to ONE entry: one request
+    // went out carrying ALICE, and BOB was handed ALICE's governed response
+    // from the cache without a request being made on his behalf at all.
+    //
+    // Two INDEPENDENT clients each own a cache and so send two requests — which
+    // is why nothing outside the derived-client path could see this.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
+        .mount(&server)
+        .await;
+
+    let mut config = AxonFlowConfig::new(server.uri());
+    config.client_id = Some("org".into());
+    config.client_secret = Some("secret".into());
+    config.cache.enabled = true;
+    let base = AxonFlowClient::new(config).expect("client");
+
+    let query = "the same question from two people";
+    let _ = base
+        .as_user("ALICE-TOKEN")
+        .proxy_llm_call("", query, "mcp-query", std::collections::HashMap::new())
+        .await;
+    let _ = base
+        .as_user("BOB-TOKEN")
+        .proxy_llm_call("", query, "mcp-query", std::collections::HashMap::new())
+        .await;
+
+    let seen = server.received_requests().await.unwrap();
+    let identities: Vec<_> = seen
+        .iter()
+        .map(|r| {
+            r.headers
+                .get(HEADER_USER_TOKEN)
+                .map(|v| v.to_str().unwrap().to_string())
+                .unwrap_or_else(|| "NO IDENTITY".to_string())
+        })
+        .collect();
+
+    assert_eq!(
+        seen.len(),
+        2,
+        "two identities asking the same question must produce TWO governed requests. One means \
+         the second caller was served the FIRST caller's response out of a shared cache, without \
+         the platform ever evaluating the request on their behalf — a cross-user data leak \
+         through a cache key that did not include the identity. Identities seen: {identities:?}"
+    );
+    assert!(
+        identities.contains(&"ALICE-TOKEN".to_string())
+            && identities.contains(&"BOB-TOKEN".to_string()),
+        "each request must carry its OWN caller's identity: {identities:?}"
+    );
+}
+
+#[tokio::test]
+async fn one_identity_asking_twice_still_hits_the_cache() {
+    // The other failure direction. Folding the identity into the key must not
+    // turn the cache off: a fix that made every lookup miss would "pass" the
+    // test above while quietly costing every caller a round trip.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
+        .mount(&server)
+        .await;
+
+    let mut config = AxonFlowConfig::new(server.uri());
+    config.client_id = Some("org".into());
+    config.client_secret = Some("secret".into());
+    config.cache.enabled = true;
+    let base = AxonFlowClient::new(config).expect("client");
+    let alice = base.as_user("ALICE-TOKEN");
+
+    for _ in 0..2 {
+        let _ = alice
+            .proxy_llm_call(
+                "",
+                "one question",
+                "mcp-query",
+                std::collections::HashMap::new(),
+            )
+            .await;
+    }
+
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "the same identity asking the same question twice must be served from the cache; a key \
+         that never matches is a disabled cache wearing a fix's name"
+    );
 }
 
 // ==========================================================================
@@ -562,6 +698,48 @@ fn the_header_is_spelled_once_and_stamped_at_one_site() {
     let mut setters = Vec::new();
     let mut literals = Vec::new();
 
+    /// Strip line comments and collapse whitespace, keeping a byte -> line map.
+    ///
+    /// The census used to run per LINE, which made it blind to exactly the
+    /// shape rustfmt produces on a long call:
+    ///
+    /// ```ignore
+    /// req.headers_mut().insert(
+    ///     HEADER_USER_TOKEN,
+    ///     value,
+    /// );
+    /// ```
+    ///
+    /// `.insert(` and the constant land on different lines, so no single line
+    /// carries both and a second stamping site reads as clean. The formatter
+    /// decides where the newline goes, which means the guard's coverage
+    /// depended on how long the surrounding identifiers happened to be.
+    fn flatten(text: &str) -> (String, Vec<usize>) {
+        let mut out = String::new();
+        let mut lines = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // Comments are excluded: the claim is about CODE. The header is
+            // named in prose in several doc comments on purpose, and counting
+            // those would make the guard fail for being well documented —
+            // which teaches the next author to delete the explanation rather
+            // than the duplicate.
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            for ch in trimmed.chars() {
+                // Whitespace inside a statement is the formatter's business,
+                // not the guard's, so it collapses to nothing.
+                if ch.is_whitespace() {
+                    continue;
+                }
+                out.push(ch);
+                lines.push(index + 1);
+            }
+        }
+        (out, lines)
+    }
+
     fn walk(dir: &Path, setters: &mut Vec<String>, literals: &mut Vec<String>) {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
@@ -573,46 +751,53 @@ fn the_header_is_spelled_once_and_stamped_at_one_site() {
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;
             }
-            let text = fs::read_to_string(&path).unwrap();
-            for (index, line) in text.lines().enumerate() {
-                let trimmed = line.trim_start();
-                // Comments are excluded: the claim is about CODE. The header is
-                // named in prose in several doc comments on purpose, and
-                // counting those would make the guard fail for being well
-                // documented — which teaches the next author to delete the
-                // explanation rather than the duplicate.
-                if trimmed.starts_with("//") {
-                    continue;
+            let (flat, line_of) = flatten(&fs::read_to_string(&path).unwrap());
+            // Case-folded, because a HeaderName literal is conventionally
+            // written lower-case (`HeaderName::from_static` REQUIRES it), and a
+            // census that only knows the canonical spelling would have read a
+            // second stamping site as clean.
+            let folded = flat.to_ascii_lowercase();
+
+            // Every way this crate's dependencies write a header onto a request
+            // or a HeaderMap, each paired with the header it names IN THE SAME
+            // MATCH, so the two cannot be satisfied by unrelated statements.
+            // `append` matters as much as `insert`: it is the one that does NOT
+            // replace, so a second stamp added with it would put TWO
+            // X-User-Token values on the wire.
+            //
+            // `.headers(` is the HeaderMap merge; the read accessor is
+            // `.headers()` with no argument, and the `)` immediately after is
+            // what tells them apart once whitespace is gone.
+            for verb in [
+                ".header(",
+                ".insert(",
+                ".append(",
+                ".try_insert(",
+                ".try_append(",
+                ".headers(",
+            ] {
+                let mut from = 0;
+                while let Some(hit) = folded[from..].find(verb) {
+                    let at = from + hit;
+                    from = at + verb.len();
+                    if verb == ".headers(" && folded[from..].starts_with(')') {
+                        continue;
+                    }
+                    // The argument list, bounded so a match cannot reach past
+                    // the call it belongs to.
+                    let window = &folded[from..(from + 120).min(folded.len())];
+                    let arg = window.split(',').next().unwrap_or(window);
+                    if arg.contains("header_user_token") || arg.contains("\"x-user-token\"") {
+                        setters.push(format!("{}:{}", path.display(), line_of[at]));
+                    }
                 }
-                // Case-folded, because a HeaderName literal is conventionally
-                // written lower-case (`HeaderName::from_static` REQUIRES it),
-                // and a census that only knows the canonical spelling would
-                // have read a second stamping site as clean.
-                let folded = trimmed.to_ascii_lowercase();
-                let names_the_header =
-                    trimmed.contains("HEADER_USER_TOKEN") || folded.contains("x-user-token");
-                // Every way this crate's dependencies write a header onto a
-                // request or a HeaderMap. `append` matters as much as `insert`:
-                // it is the one that does NOT replace, so a second stamp added
-                // with it would put TWO X-User-Token values on the wire, which
-                // is worse than the duplicate this guard exists to catch.
-                let writes_a_header = [".header(", ".insert(", ".append(", ".try_insert(", ".try_append("]
-                    .iter()
-                    .any(|verb| trimmed.contains(verb))
-                    // `RequestBuilder::headers(map)` merges a whole HeaderMap.
-                    // Spelled with an argument; the read accessor is spelled
-                    // `.headers()` with none, and matching the bare prefix
-                    // reads every `req.headers().get(..)` assertion as a
-                    // stamping site — a marker that collides with the code
-                    // beside it, which is how a guard comes to fail on its own
-                    // tests.
-                    || (trimmed.contains(".headers(") && !trimmed.contains(".headers()"));
-                if writes_a_header && names_the_header {
-                    setters.push(format!("{}:{}", path.display(), index + 1));
-                }
-                if folded.contains("\"x-user-token\"") {
-                    literals.push(format!("{}:{}", path.display(), index + 1));
-                }
+            }
+
+            let mut from = 0;
+            while let Some(hit) = folded[from..].find("\"x-user-token\"") {
+                let at = from + hit;
+                from = at + 1;
+                literals.push(format!("{}:{}", path.display(), line_of[at]));
             }
         }
     }

@@ -443,6 +443,27 @@ impl AxonFlowClient {
         request_type.hash(&mut hasher);
         query.hash(&mut hasher);
         user_token.hash(&mut hasher);
+        // The READ-PATH identity, which is a different thing from the
+        // `user_token` argument above: that one is the write-path BODY field
+        // this call was made with, and this one is the `X-User-Token` header
+        // the request will carry.
+        //
+        // It has to be in the key because a derived client SHARES the parent's
+        // cache (`as_user` clones the `Arc`) while presenting a different
+        // identity. Without it, `base.as_user(ALICE)` and `base.as_user(BOB)`
+        // making the same call hash to the same entry, so exactly ONE request
+        // is sent — carrying ALICE — and BOB is handed ALICE's governed
+        // response out of the cache. Two independent clients send two requests
+        // and never see it; only the derived-client path collides, which is
+        // the path `as_user` exists to make safe.
+        //
+        // Hashed, never stored: the key is the digest, so a cache dump cannot
+        // yield the credential.
+        self.config
+            .user_token
+            .as_deref()
+            .unwrap_or("")
+            .hash(&mut hasher);
         if !context.is_empty() {
             let sorted: std::collections::BTreeMap<_, _> = context.iter().collect();
             serde_json::to_string(&sorted)
@@ -459,25 +480,6 @@ impl AxonFlowClient {
         &self.config.endpoint
     }
 
-    /// The single site every SDK HTTP request passes through.
-    ///
-    /// This is the Rust equivalent of the Go SDK's `doHttpRequest` middleware
-    /// (`heartbeat.go:257`): one interception point in the HTTP layer rather
-    /// than a `maybe_send_heartbeat` sprinkled per method. Consulting the gate
-    /// here is what keeps a long-running service visible to telemetry — before
-    /// 0.10.0 the constructor was the only trigger, so a service that crossed
-    /// the 7-day boundary never pinged again.
-    ///
-    /// The user's request is never delayed by it: `maybe_send_heartbeat`
-    /// returns after one mutex acquire on the suppressed path (the case on all
-    /// but at most one request per hour), and does every blocking and network
-    /// step on a spawned task.
-    ///
-    /// **`heartbeat.rs` must not route through here.** That module builds its
-    /// own [`reqwest::Client`], which is precisely what stops the telemetry
-    /// path — including its `/health` probe — from re-entering this gate.
-    /// `no_http_send_outside_the_dispatch_funnel` fails the build if a new
-    /// call site bypasses this function.
     /// A client identical to this one but presenting `user_token`.
     ///
     /// The shape to reach for when one process acts on behalf of several people
@@ -585,6 +587,26 @@ impl AxonFlowClient {
     /// — rather than against a string passed alongside it. A URL argument that
     /// can disagree with the request it describes is a guard that can be told
     /// the wrong thing.
+    ///
+    /// # The telemetry gate
+    ///
+    /// This is also the SDK's one interception point for the heartbeat, the
+    /// Rust equivalent of the Go SDK's `doHttpRequest` middleware, rather than
+    /// a `maybe_send_heartbeat` sprinkled per method. Consulting the gate here
+    /// is what keeps a long-running service visible to telemetry: before
+    /// 0.10.0 the constructor was the only trigger, so a service that crossed
+    /// the 7-day boundary never pinged again.
+    ///
+    /// The user's request is never delayed by it: `maybe_send_heartbeat`
+    /// returns after one mutex acquire on the suppressed path (the case on all
+    /// but at most one request per hour), and does every blocking and network
+    /// step on a spawned task.
+    ///
+    /// **`heartbeat.rs` must not route through here.** That module builds its
+    /// own [`reqwest::Client`], which is precisely what stops the telemetry
+    /// path — including its `/health` probe — from re-entering this gate.
+    /// `no_http_send_outside_the_dispatch_funnel` fails the build if a new
+    /// call site bypasses this function.
     async fn dispatch(
         &self,
         req: reqwest::RequestBuilder,
@@ -674,7 +696,7 @@ impl AxonFlowClient {
     ///
     /// `None` means "this call said nothing", so the client-wide identity
     /// applies; `Some("")` is a deliberate unidentified read. See
-    /// [`Self::with_identity`].
+    /// [`Self::stamp_identity`].
     pub(crate) async fn raw_get_as(
         &self,
         url: &str,
@@ -979,6 +1001,67 @@ mod read_identity_tests {
         assert!(
             req.headers().get(HEADER_USER_TOKEN).is_none(),
             "a rejected token must leave no header behind"
+        );
+    }
+
+    /// The diagnostic must point at the byte that is actually refused.
+    ///
+    /// A header value admits obs-text, so every byte from 0x80 up is legal —
+    /// `café-token` is sent as-is. A predicate written as "not printable ASCII"
+    /// accepts the same tokens but, when one IS refused, reports the position
+    /// of the first non-ASCII byte instead of the control character that caused
+    /// it, sending the reader to fix the one character that was fine.
+    #[test]
+    fn the_diagnostic_points_at_the_control_char_not_at_legal_non_ascii() {
+        let client = client_for("https://localhost:8080", None);
+        let mut req = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .build()
+            .expect("request");
+
+        // "café" is 5 bytes: the é is bytes 3-4. The newline is byte 9.
+        let err = client
+            .stamp_identity(&mut req, Some("café-tok\nen"))
+            .expect_err("an embedded newline must be refused");
+        let rendered = err.to_string();
+
+        assert!(
+            rendered.contains("byte 9"),
+            "want the newline's position, not the first non-ASCII byte's: {rendered}"
+        );
+        assert!(
+            !rendered.contains("non-ASCII byte at"),
+            "non-ASCII is legal in a header value and must not be named as the offender: \
+             {rendered}"
+        );
+    }
+
+    /// The other direction: a token that is merely non-ASCII must be SENT, not
+    /// refused. A diagnostic fixed by tightening the predicate instead of
+    /// correcting it would reject a legal credential.
+    #[test]
+    fn a_non_ascii_token_is_sent_rather_than_refused() {
+        let client = client_for("https://localhost:8080", Some("café-token"));
+        let mut req = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .build()
+            .expect("request");
+        client
+            .stamp_identity(&mut req, None)
+            .expect("obs-text is legal in a header value; refusing it would break a caller whose identity provider mints one");
+
+        // Compared as BYTES, not through `to_str()`: `HeaderValue::to_str`
+        // refuses obs-text itself, so a value that is perfectly legal on the
+        // wire reads back as None through it. The `stamped` helper takes that
+        // path, which is why this test builds the request itself — a helper
+        // that cannot represent the value under test would have made this
+        // assertion fail for a reason that has nothing to do with the SDK.
+        assert_eq!(
+            req.headers().get(HEADER_USER_TOKEN).map(|v| v.as_bytes()),
+            Some("café-token".as_bytes()),
+            "a non-ASCII token must be SENT, not refused"
         );
     }
 

@@ -295,21 +295,26 @@ pub fn refuse_vacuous_scoped_page(
 ///
 /// The token is NEVER in the message. The offending byte's index and CLASS are,
 /// because those are what you need to find it in your own minting code, and
-/// neither is a fragment of the credential. The byte's value is withheld too:
-/// for a non-ASCII byte it is one eighth of the secret.
+/// neither is a fragment of the credential. The byte's VALUE is withheld too.
+///
+/// The rejected set is narrower than "not printable ASCII", and getting that
+/// wrong points the caller at an innocent byte. A header value admits obs-text,
+/// so every byte from 0x80 up is LEGAL: `café-token` is sent as-is, and so is a
+/// token with an emoji in it — measured against `HeaderValue::from_str`, not
+/// inferred from the RFC. What it refuses is exactly the C0 controls except
+/// tab, plus DEL. A diagnostic that treated non-ASCII as the offender would,
+/// for a token like `café…\n…`, report the position of the `é` and send someone
+/// to fix the one character that was fine.
 pub(crate) fn unusable_token(token: &str) -> String {
     let offender = token
         .bytes()
-        .position(|b| !(0x20..=0x7e).contains(&b) && b != b'\t');
-    let detail = match offender.map(|i| (i, token.as_bytes()[i])) {
-        Some((index, byte)) if byte.is_ascii() => format!(
-            "an ASCII control character at byte {index} (an embedded newline or carriage \
-             return is the usual cause; a LEADING or TRAILING one is trimmed on the way in, \
-             so this one is inside the value)"
+        .position(|b| (b < 0x20 && b != b'\t') || b == 0x7f);
+    let detail = match offender {
+        Some(index) => format!(
+            "a control character at byte {index} (an embedded newline or carriage return is the \
+             usual cause; a LEADING or TRAILING one is trimmed on the way in, so this one is \
+             inside the value. Non-ASCII bytes are NOT the problem — a header value admits them)"
         ),
-        Some((index, _)) => {
-            format!("a non-ASCII byte at byte {index} (an HTTP header value is visible ASCII only)")
-        }
         // Unreachable via HeaderValue::from_str, whose rejection set is exactly
         // the bytes tested above. Named rather than asserted: a future header
         // crate with a wider rule must not make this arm claim a cause it did
