@@ -1,6 +1,6 @@
 use crate::config::{AxonFlowConfig, Mode};
 use crate::error::AxonFlowError;
-use crate::heartbeat::maybe_send_heartbeat;
+use crate::heartbeat::maybe_send_heartbeat_on_request;
 use crate::types::agent::{ClientRequest, ClientResponse};
 use crate::PATH_SEGMENT;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
@@ -125,7 +125,20 @@ impl AxonFlowClient {
             None
         };
 
-        maybe_send_heartbeat(&config.endpoint, &config.mode);
+        // NO HEARTBEAT HERE ANY MORE (axonflow-enterprise#3682). The gate is
+        // consulted on this client's FIRST OUTBOUND REQUEST instead, in
+        // `dispatch` — which was already a call site, so this is a removal
+        // rather than a move.
+        //
+        // Why: every framework adapter takes a client, so an adapter cannot
+        // exist until this constructor has returned. Pinging here meant an
+        // adapter registering from its own constructor could never reach the
+        // first ping, and the 7-day stamp then suppressed the next one for a
+        // week — so a short-lived process using an adapter reported it never.
+        // See `heartbeat::register_adapter`.
+        //
+        // A client that is constructed and never used no longer pings. That is
+        // deliberate and disclosed: a heartbeat is a claim about usage.
 
         Ok(Self {
             config,
@@ -597,10 +610,17 @@ impl AxonFlowClient {
     /// 0.10.0 the constructor was the only trigger, so a service that crossed
     /// the 7-day boundary never pinged again.
     ///
-    /// The user's request is never delayed by it: `maybe_send_heartbeat`
-    /// returns after one mutex acquire on the suppressed path (the case on all
-    /// but at most one request per hour), and does every blocking and network
-    /// step on a spawned task.
+    /// On all but at most one request per hour the gate returns after a single
+    /// mutex acquire and the caller is not delayed at all.
+    ///
+    /// On the COLD path the send is AWAITED here rather than spawned, and that
+    /// is deliberate: a spawned ping is dropped when the process does not
+    /// outlive it, measured at 1 delivery in 12 for a compiled one-call binary
+    /// that returns from `main` — while its `/health` GET reached the
+    /// customer's platform every time. That shape is a CLI, a Lambda, a CI
+    /// step, which is the population the first-request trigger exists to make
+    /// visible. Bounded at ~3 s by `HEARTBEAT_TIMEOUT`; see
+    /// `maybe_send_heartbeat_on_request`.
     ///
     /// **`heartbeat.rs` must not route through here.** That module builds its
     /// own [`reqwest::Client`], which is precisely what stops the telemetry
@@ -612,7 +632,7 @@ impl AxonFlowClient {
         req: reqwest::RequestBuilder,
         override_token: Option<&str>,
     ) -> Result<reqwest::Response, AxonFlowError> {
-        maybe_send_heartbeat(&self.config.endpoint, &self.config.mode);
+        maybe_send_heartbeat_on_request(&self.config.endpoint, &self.config.mode).await;
         let (client, built) = req.build_split();
         let mut built = built?;
         self.stamp_identity(&mut built, override_token)?;

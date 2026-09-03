@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/helper"
 
-SCENARIOS=(full pre_3660 starting http_error not_json hostile oversized_value)
+SCENARIOS=(full pre_3660 starting http_error not_json hostile oversized_value adapter)
 if [ -n "${AXONFLOW_LIVE_HEALTH_URL:-}" ]; then
   SCENARIOS+=(live)
 fi

@@ -318,7 +318,41 @@ let config = AxonFlowConfig {
 
 The SDK includes a non-blocking background heartbeat that follows the AxonFlow telemetry contract: **at most one ping per machine every 7 days** to `https://checkpoint.getaxonflow.com/v1/ping`. Payload is classification-only — SDK version, OS, architecture, Rust toolchain version, deployment mode, an endpoint-type bucket (`localhost` / `private_network` / `remote` / `unknown`), and the deployment's `org_id` (the `ORG_ID` env value, or the `local-dev-org` sentinel when unset; on Community SaaS it is the `cs_<uuid>` tenant identifier). The raw URL of your endpoint is never sent — only the bucket it falls into.
 
-The gate is evaluated when a client is constructed and again on each SDK request, so a long-running service stays visible across the 7-day boundary. Evaluating it costs one in-process check; the `/health` probe and the ping run on a background task and never delay your call.
+The gate is evaluated **on each SDK request** — not when a client is constructed — so a long-running service stays visible across the 7-day boundary, and a client that is built but never used sends nothing at all. Evaluating it costs one in-process check, which is what almost every request pays.
+
+When a ping is actually due, the `/health` probe and the POST are **awaited on that request**, bounded at 3 seconds. They are not spawned, and that is deliberate: a spawned send dies with a process that does not outlive it, measured at **1 delivery in 12** for a compiled one-call binary — precisely the short-lived CLI, job and function population the signal exists to count. The cost is reachable at most once per hour per process, and only when a ping is due, which the 7-day stamp limits to once per machine per week.
+
+### Declaring a framework adapter (`register_adapter`)
+
+If you are building a framework integration on top of this crate, you can declare it so aggregate adoption figures can tell adapter-driven usage apart from bare SDK usage. Without this they are indistinguishable: an adapter reports the same `sdk`, the same `sdk_version` and the same endpoint as any other client.
+
+```rust
+use axonflow_sdk_rust::register_adapter;
+
+register_adapter("my-framework");
+```
+
+**This crate ships no adapter of its own**, so nothing in it calls this — it exists for third-party integrations. (The `interceptors` module wraps LLM *provider* clients, which is a different dimension from the agent framework driving the SDK and is deliberately not reported here.)
+
+The name is added to the `features` array of the heartbeat that already fires, as `adapter:my-framework`. **It adds no network request**, and calling `register_adapter` does not itself send anything. It is idempotent and safe from any thread.
+
+The heartbeat fires on the client's **first outbound request**, not at construction, so anything registered before that request is on the very first ping. A name registered afterwards rides the next heartbeat.
+
+What is and is not collected:
+
+- **Collected:** the adapter name you pass, lowercased and trimmed.
+- **Not collected:** anything about what the adapter *does* — no prompts, no payloads, no tool names, no user identities, no configuration.
+
+Bounds, so a malformed call cannot damage the ping it rides on:
+
+- A name longer than **64 bytes** is **dropped whole**, never truncated — a truncated adapter name is a name nothing is running. A name that is empty after trimming is ignored.
+- The `features` array carries at most **32 entries**, none longer than **128 bytes**, mirroring the receiver's own bounds.
+
+The name is **not** validated against a list of known frameworks. The canonical vocabulary lives on the receiving service, which folds an unrecognised name into an `adapter:unknown` bucket while keeping the raw name on the row.
+
+### When the heartbeat fires
+
+It fires on the client's **first outbound request**, not at construction — so a client that is created and never used does not ping at all. At most one ping per machine per 7 days is delivered, and the cadence is held both by a stamp file and in memory, so a runtime that cannot write the stamp is still bounded (per process rather than per machine). If the checkpoint cannot be reached, the re-check interval doubles from 1 hour to a ceiling of 7 days and a single delivery resets it.
 
 `AXONFLOW_TELEMETRY=off` is the **sole opt-out lever** as of v0.2. There is no programmatic disable on the SDK config — the env-var-only pattern matches HashiCorp's `CHECKPOINT_DISABLE`, Docker, and Datadog Agent. Sandbox-mode clients (constructed via `AxonFlowConfig::sandbox(...)`) tag their pings with `stream="sandbox"` so analytics can distinguish dev/test usage from production heartbeat. `DO_NOT_TRACK` is intentionally not honored.
 
@@ -336,7 +370,7 @@ Four values are read from that one response and relayed onto the ping: the platf
 
 **Transient values are reported as-is.** A platform that is still starting reports `starting`, and the SDK forwards that unchanged rather than filtering it.
 
-**A failure here never costs you the ping or the request.** The probe has its own capped share of a single 3-second budget covering the whole telemetry path, so an unreachable or slow `/health` cannot delay *your* call, cost you the ping, stack timeouts, or surface an error to your code. It can delay the ping itself by up to that capped share, on the background task.
+**A failure here never costs you the ping, and what it can cost your request is bounded and stated.** The probe has its own capped share of a single 3-second budget covering the whole telemetry path, so an unreachable or slow `/health` cannot cost you the ping, stack timeouts, or surface an error to your code. Because the telemetry path is awaited on the request that triggers it, a slow probe **can** delay that one call — by at most its capped share of those 3 seconds, at most once per hour per process, and only when a ping is due.
 
 If the checkpoint service cannot be reached at all — an air-gapped or egress-restricted deployment — repeated failures widen the retry interval rather than retrying hourly forever. That backoff is per process, so a fleet of short-lived processes still attempts once per process start; `AXONFLOW_TELEMETRY=off` is the way to stop it entirely.
 

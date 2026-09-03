@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The heartbeat now relays `platform_version`, `license_tier`, `edition` and
+  `platform_deployment_mode` from the platform's `/health` (#88, #89).** These
+  shipped without CHANGELOG entries; recorded here so the release notes are
+  complete.
+
+  **This introduced a SECOND outbound request on the telemetry path** — a `GET`
+  on the configured platform's `/health`, made before the checkpoint POST. It is
+  unauthenticated and goes to the caller's own platform, but it is a change to
+  the SDK's network behaviour and is disclosed as such in `README.md`.
+  `AXONFLOW_TELEMETRY=off` suppresses it along with the ping.
+
+- **The heartbeat is re-evaluated on every SDK request, with a failure backoff
+  and an in-memory 7-day cadence (#89, #90).** Also shipped without entries.
+  Before #89 the constructor was the only trigger, so a service that stayed up
+  past the 7-day boundary never pinged again; and where the stamp file cannot be
+  written, a delivered ping had nothing bounding it.
+
+- **`register_adapter(name)` declares a framework adapter on the existing
+  heartbeat (axonflow-enterprise#3682).** A framework integration built on this
+  crate was previously indistinguishable from bare SDK use on every telemetry
+  dimension: same `sdk`, same `sdk_version`, same endpoint.
+  `register_adapter("langchain")` adds `adapter:langchain` to the `features`
+  array of the ping that already fires. **No new network request, no new
+  configuration surface, no second endpoint.** Idempotent and thread-safe. The
+  name is lowercased and trimmed and otherwise sent as given — deliberately NOT
+  checked against a list of known frameworks, because the canonical vocabulary
+  lives on the receiver, which preserves an unrecognised name on the row while
+  bucketing it for reporting.
+
+  **This crate ships no adapter of its own**, so nothing in it calls this — it
+  exists for third-party integrations. That is a census result, not an
+  omission: unlike the Go, Python, TypeScript and Java SDKs, this crate exports
+  no framework adapter. The `interceptors` module wraps LLM *provider* clients
+  (Anthropic, OpenAI), which is a different dimension from the agent framework
+  driving the SDK and is deliberately not reported on this field.
+
+  This is the FIRST producer of `features` here — the array was a hardcoded `[]`.
+
+### Changed
+
+- **The telemetry heartbeat now fires on the client's first outbound request
+  rather than at client construction.** A client that is constructed and never
+  used no longer pings — a heartbeat is a claim about usage.
+
+  The reason is `register_adapter`, and it is a cross-SDK change made uniformly:
+  every framework adapter takes a client, so an adapter cannot exist until the
+  constructor has returned; pinging there meant an adapter registering from its
+  own constructor could never reach the first ping, and the 7-day stamp then
+  suppressed the next one for a week. For a short-lived process the adapter was
+  never reported at all.
+
+  **The cold-path send is now AWAITED inline on the caller's task**, bounded by
+  the 3-second `HEARTBEAT_TIMEOUT`, rather than spawned. An earlier revision of
+  this change said "delivery is unaffected here" on the grounds that the ping was
+  already spawned; that was wrong, and measuring it is what showed so. A spawned
+  send is dropped when the process does not outlive it: a compiled binary that
+  constructs a client, makes one call and returns from `main` delivered the ping
+  **1 time in 12** — and worse than silence, its `/health` GET reached the
+  platform every time, so the SDK made an unsolicited request and recorded
+  nothing for it. That shape is a CLI, a Lambda handler, a CI step: exactly the
+  population the first-request trigger exists to make visible.
+
+  The cost is bounded and stated: at most ~3 s added to one request, reachable
+  at most once per hour per process, and only when a ping is actually due —
+  which the 7-day stamp limits to once per machine per week. Every other request
+  returns after a single mutex acquire. Proven by
+  `runtime-e2e/fast_exit_delivery` (12/12 delivered; 2/12 under the spawned
+  mutant).
+
+- **The `features` array is bounded at 32 entries of 128 bytes**, mirroring the
+  receiver's own limits, and an over-long entry is dropped whole rather than
+  truncated. The existing 64-byte `MAX_RELAYED_VALUE_LEN` bound now also covers
+  adapter names, so every value this SDK puts on the wire that it did not author
+  goes through one bound with one meaning.
+
 ## [0.9.0] - 2026-09-01: AuthZEN-native authorization surface
 
 ### Added

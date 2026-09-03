@@ -157,6 +157,20 @@ fn scenario(name: &str) -> Scenario {
             expect_present: vec![],
             expect_absent: vec![],
         },
+        // A caller-declared framework adapter (axonflow-enterprise#3682). The
+        // /health answer is the ordinary post-#3660 one, because the point of
+        // this scenario is the `features` array, not the relay — and the relay
+        // assertions still run, so the adapter must not cost any dimension.
+        "adapter" => Scenario {
+            name: "adapter",
+            health_body: Some(
+                r#"{"status":"healthy","version":"10.4.0","tier":"Enterprise","edition":"enterprise","deployment_mode":"community_saas"}"#
+                    .to_string(),
+            ),
+            health_status: 200,
+            expect_present: all_four("10.4.0", "Enterprise", "enterprise", "community_saas"),
+            expect_absent: vec![],
+        },
         other => {
             eprintln!("unknown SCENARIO {other:?}");
             std::process::exit(2);
@@ -216,15 +230,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         return;
                     };
                     let is_ping = head.starts_with("POST ");
+                    // THE PATH IS CHECKED, not just the method. This listener
+                    // now serves the SDK's API calls too — the heartbeat fires
+                    // on the first outbound REQUEST, so the driver has to make
+                    // one — and counting every non-POST as a /health fetch made
+                    // the "exactly ONE /health fetch" assertion fail on the
+                    // connectors GET. That assertion is the thing proving no new
+                    // network call was added, so it is the listener that had to
+                    // get more precise, not the assertion that had to relax.
+                    let is_health = head.starts_with("GET /health");
                     let response = if is_ping {
                         *captured.lock().unwrap() = Some(body);
                         http_response(200, Some("{\"latest_version\":null}"))
-                    } else {
+                    } else if is_health {
                         *health_hits.lock().unwrap() += 1;
                         match &health_body {
                             Some(b) => http_response(health_status, Some(b)),
                             None => http_response(health_status, None),
                         }
+                    } else {
+                        // Any other API path the driver's own call reaches.
+                        // The call's outcome is irrelevant — the heartbeat rides
+                        // the ATTEMPT — so a plain 200 keeps it out of the way.
+                        http_response(200, Some("{\"connectors\":[]}"))
                     };
                     let _ = socket.write_all(&response).await;
                     let _ = socket.flush().await;
@@ -242,9 +270,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[{}] listener on {base}", sc.name);
     println!("[{}] SDK endpoint {endpoint}", sc.name);
 
-    // The real public entry point. Construction is one of the two trigger
-    // sites; nothing here reaches into the heartbeat module.
-    let _client = AxonFlowClient::new(AxonFlowConfig::new(&endpoint))?;
+    // An adapter declared BEFORE the client, through the real public API. Only
+    // the `adapter` scenario sets this; every other scenario asserts the array
+    // is empty, which is what makes the adapter assertion meaningful rather
+    // than something that would pass anywhere.
+    if sc.name == "adapter" {
+        axonflow_sdk_rust::register_adapter("langchain");
+        // Over the 64-byte cap: must be dropped WHOLE, and must not take the
+        // valid name with it.
+        axonflow_sdk_rust::register_adapter(&"a".repeat(65));
+    }
+
+    // The real public entry point. Construction no longer pings; the call below
+    // is the trigger.
+    let client = AxonFlowClient::new(AxonFlowConfig::new(&endpoint))?;
+
+    // THE HEARTBEAT FIRES HERE, not at construction (axonflow-enterprise#3682).
+    // One outbound call is what triggers it. The call itself fails against this
+    // stand-in listener, and that is fine: the heartbeat rides the ATTEMPT to
+    // make a request, so a caller whose first API call fails is still a caller.
+    let _ = client.list_connectors().await;
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let body = loop {
@@ -271,6 +316,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut failures: Vec<String> = Vec::new();
+
+    // The adapter registry is the only producer of `features`.
+    let features = ping
+        .get("features")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        });
+    match (&features, sc.name) {
+        (None, _) => failures.push(
+            "features: the key must ALWAYS be present — `[]` and absent are different facts \
+             to the receiver"
+                .to_string(),
+        ),
+        (Some(f), "adapter") => {
+            if !f.iter().any(|e| e == "adapter:langchain") {
+                failures.push(format!(
+                    "features: {f:?} is missing adapter:langchain, which was registered \
+                     before the client was built"
+                ));
+            }
+            if f.iter().any(|e| e.len() > "adapter:".len() + 64) {
+                failures.push(format!(
+                    "features: {f:?} carries an over-cap name in full"
+                ));
+            }
+            if f.iter().any(|e| e == &format!("adapter:{}", "a".repeat(64))) {
+                failures.push(
+                    "features: the 65-byte name was TRUNCATED to 64 and sent — a truncated \
+                     adapter name is a name nothing is running"
+                        .to_string(),
+                );
+            }
+        }
+        (Some(f), _) => {
+            if !f.is_empty() {
+                failures.push(format!(
+                    "features: {f:?} on a scenario that registered nothing — this SDK ships \
+                     no adapter of its own, so the array must be empty unless a caller \
+                     declared one"
+                ));
+            }
+        }
+    }
 
     // Shape that must hold in every scenario — a failed probe costs
     // dimensions, never the ping.

@@ -154,7 +154,7 @@ impl AxonFlowConfig {
     /// `mode = Mode::Sandbox`, and enables debug logging.
     ///
     /// Sandbox-mode clients fire anonymous telemetry tagged `stream="sandbox"`
-    /// — see `heartbeat::maybe_send_heartbeat`. Set `AXONFLOW_TELEMETRY=off`
+    /// on their first request — see `heartbeat::maybe_send_heartbeat_on_request`. Set `AXONFLOW_TELEMETRY=off`
     /// to opt out (the SOLE opt-out lever; there is intentionally no
     /// programmatic disable on the SDK config).
     pub fn sandbox(client_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
