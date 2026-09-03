@@ -60,7 +60,7 @@ impl AxonFlowError {
     }
 
     /// Whether this error should trigger fail-open (return a synthetic success
-    /// response). Currently identical to [`is_retryable`]; maintained as a
+    /// response). Currently identical to [`Self::is_retryable`]; maintained as a
     /// separate method because future policy changes may diverge them (e.g.
     /// `ConfigError` could be fail-open-eligible but not retryable).
     pub fn is_fail_open_eligible(&self) -> bool {

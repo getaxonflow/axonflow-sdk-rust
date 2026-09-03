@@ -998,6 +998,23 @@ mod read_identity_tests {
             rendered.contains("control character") && rendered.contains("byte 8"),
             "the message must locate the offending byte and name its class: {rendered}"
         );
+
+        // A TAB before the control character. Tab is a LEGAL header-value byte,
+        // so a predicate written as "first non-printable" would report the
+        // TAB's position and send the reader to the one character that was
+        // fine. Here the tab is byte 8 and the DEL is byte 10.
+        let mut tabbed = client
+            .http_client
+            .get("https://localhost:8080/api/v1/decisions")
+            .build()
+            .expect("request");
+        let tab_err = client
+            .stamp_identity(&mut tabbed, Some("SENTINEL\tX\u{7f}VALUE"))
+            .expect_err("an embedded DEL must be refused");
+        assert!(
+            tab_err.to_string().contains("byte 10"),
+            "want the DEL's position, not the legal tab's: {tab_err}"
+        );
         assert!(
             req.headers().get(HEADER_USER_TOKEN).is_none(),
             "a rejected token must leave no header behind"

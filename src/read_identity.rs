@@ -326,7 +326,7 @@ pub(crate) fn unusable_token(token: &str) -> String {
          The token itself is deliberately omitted from this message. It was NOT sent, and the \
          read was NOT attempted — an unsendable identity is reported rather than dropped, \
          because a dropped one would have made this read silently unidentified. \
-         (length {} bytes)",
+         (length {} bytes, counted after trimming)",
         token.len()
     )
 }

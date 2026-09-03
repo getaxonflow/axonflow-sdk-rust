@@ -258,10 +258,11 @@ async fn as_user_with_no_token_presents_no_identity() {
 /// `execute_plan`, `cancel_plan` all went out with the tenant credential and no
 /// person attached, silently, while the docs promised the opposite.
 ///
-/// The four routes below are chosen to cover the axes a single-site stamp can
-/// still miss, not to enumerate methods: both transports (`http_client` and the
-/// longer-timeout `map_http_client`, which is a SEPARATE `reqwest::Client` and
-/// therefore a separate chance to forget), and both verbs.
+/// The routes below are chosen to cover the axes a single-site stamp can still
+/// miss, not to enumerate methods: every one of the six crate-internal
+/// transport helpers, both transports (`http_client` and the longer-timeout
+/// `map_http_client`, which is a SEPARATE `reqwest::Client` and therefore a
+/// separate chance to forget), and both verbs.
 async fn identities_seen_by_every_route(
     client: &AxonFlowClient,
     server: &MockServer,
@@ -293,7 +294,7 @@ async fn identities_seen_by_every_route(
     assert_eq!(
         seen.len(),
         7,
-        "precondition: all four routes must have been dialled, or this test asserts nothing about \
+        "precondition: all seven calls must have been dialled, or this test asserts nothing about \
          the ones that were not"
     );
     seen.iter()
