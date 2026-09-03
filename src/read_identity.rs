@@ -56,8 +56,11 @@ pub const HEADER_READ_SCOPE: &str = "X-Axonflow-Read-Scope";
 ///   into a refusal.
 ///
 /// - [`ReadScope::Other`] — a scope a newer platform names and this build does
-///   not recognise. It is preserved verbatim rather than folded into one of the
-///   three, so a caller can see what it was, and it never triggers a refusal:
+///   not recognise. Its VALUE is preserved rather than folded into one of the
+///   three, so a caller can see what it was — trimmed and lower-cased, like the
+///   three named ones, because the same normalisation has to apply to every
+///   value or the recognised set would depend on a proxy's header casing. It
+///   never triggers a refusal:
 ///   this header is the platform's account of a decision it has ALREADY made and
 ///   applied, so an unrecognised value is a reporting gap on our side, not a
 ///   licence to invent an outcome.
@@ -90,7 +93,8 @@ pub enum ReadScope {
     /// all. (Easy to hit: the platform's own `generate-jwt.sh` defaults to
     /// `demo-user@axonflow.local`.)
     None,
-    /// A scope this build does not recognise, preserved verbatim.
+    /// A scope this build does not recognise, preserved (trimmed and
+    /// lower-cased, as every value on this header is).
     Other(String),
 }
 
@@ -279,6 +283,47 @@ pub fn refuse_vacuous_scoped_page(
         scope,
         status,
     })
+}
+
+/// The diagnosis for a per-user identity that cannot be an HTTP header value.
+///
+/// Reported rather than dropped. Dropping it is the worst of the three outcomes
+/// available: the read then goes out unidentified, the platform answers with a
+/// scoped-empty page, and the SDK tells the caller "no identity was presented"
+/// — which is true of the wire and false of what they did. A caller who set a
+/// token and gets told they set none has been sent to look in the wrong place.
+///
+/// The token is NEVER in the message. The offending byte's index and CLASS are,
+/// because those are what you need to find it in your own minting code, and
+/// neither is a fragment of the credential. The byte's value is withheld too:
+/// for a non-ASCII byte it is one eighth of the secret.
+pub(crate) fn unusable_token(token: &str) -> String {
+    let offender = token
+        .bytes()
+        .position(|b| !(0x20..=0x7e).contains(&b) && b != b'\t');
+    let detail = match offender.map(|i| (i, token.as_bytes()[i])) {
+        Some((index, byte)) if byte.is_ascii() => format!(
+            "an ASCII control character at byte {index} (an embedded newline or carriage \
+             return is the usual cause; a LEADING or TRAILING one is trimmed on the way in, \
+             so this one is inside the value)"
+        ),
+        Some((index, _)) => {
+            format!("a non-ASCII byte at byte {index} (an HTTP header value is visible ASCII only)")
+        }
+        // Unreachable via HeaderValue::from_str, whose rejection set is exactly
+        // the bytes tested above. Named rather than asserted: a future header
+        // crate with a wider rule must not make this arm claim a cause it did
+        // not observe.
+        None => "a byte HTTP header values do not admit".to_string(),
+    };
+    format!(
+        "the per-user identity is not a usable HTTP header value: it contains {detail}. \
+         The token itself is deliberately omitted from this message. It was NOT sent, and the \
+         read was NOT attempted — an unsendable identity is reported rather than dropped, \
+         because a dropped one would have made this read silently unidentified. \
+         (length {} bytes)",
+        token.len()
+    )
 }
 
 /// Whether two URLs are the same origin: scheme, host AND port.

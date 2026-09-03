@@ -247,6 +247,111 @@ async fn as_user_with_no_token_presents_no_identity() {
 }
 
 // ==========================================================================
+// The identity rides EVERY request, not just the two reads
+// ==========================================================================
+
+/// Every route this client can reach, not only the two role-scoped reads.
+///
+/// This is the finding that made round 2: the identity used to be stamped by
+/// the ONE read helper that took a per-call override, so a client derived with
+/// `as_user` ran every other method as the PROCESS — `list_connectors`,
+/// `execute_plan`, `cancel_plan` all went out with the tenant credential and no
+/// person attached, silently, while the docs promised the opposite.
+///
+/// The four routes below are chosen to cover the axes a single-site stamp can
+/// still miss, not to enumerate methods: both transports (`http_client` and the
+/// longer-timeout `map_http_client`, which is a SEPARATE `reqwest::Client` and
+/// therefore a separate chance to forget), and both verbs.
+async fn identities_seen_by_every_route(
+    client: &AxonFlowClient,
+    server: &MockServer,
+) -> Vec<String> {
+    let _ = client.list_connectors().await; // http GET
+    let _ = client.get_plan_status("p1").await; // MAP GET
+    let _ = client.execute_plan("p1", None).await; // http POST
+    let _ = client.cancel_plan("p1", None).await; // MAP POST
+
+    let seen = server.received_requests().await.unwrap();
+    assert_eq!(
+        seen.len(),
+        4,
+        "precondition: all four routes must have been dialled, or this test asserts nothing about \
+         the ones that were not"
+    );
+    seen.iter()
+        .map(|r| {
+            let route = format!("{} {}", r.method, r.url.path());
+            match r.headers.get(HEADER_USER_TOKEN) {
+                Some(v) => format!("{route} -> {}", v.to_str().unwrap()),
+                None => format!("{route} -> NO IDENTITY"),
+            }
+        })
+        .collect()
+}
+
+async fn server_answering_every_route() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/connectors"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"connectors": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/plan/p1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"plan_id": "p1"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/plan/p1/cancel"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"plan_id": "p1"})))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn a_derived_client_presents_its_identity_on_every_route() {
+    let server = server_answering_every_route().await;
+    let derived = client(&server.uri(), None).as_user(TEST_TOKEN);
+
+    let seen = identities_seen_by_every_route(&derived, &server).await;
+
+    let unidentified: Vec<_> = seen.iter().filter(|s| s.ends_with("NO IDENTITY")).collect();
+    assert!(
+        unidentified.is_empty(),
+        "as_user promises a client that acts as one person on EVERY method — that is the whole \
+         reason it exists beside the per-call *_as reads, and a gateway deriving one per request \
+         has no way to notice the routes that quietly widened back to the process's own \
+         authority. Unidentified: {unidentified:?} (all: {seen:?})"
+    );
+}
+
+#[tokio::test]
+async fn a_client_wide_identity_reaches_the_non_read_routes_too() {
+    // The config-level half of the same property. Worth its own test rather
+    // than a parameter: `as_user` and `AxonFlowConfig::user_token` resolve
+    // through the same line today, and a change that special-cased the derived
+    // client would leave this one silently unidentified.
+    let server = server_answering_every_route().await;
+    let configured = client(&server.uri(), Some(TEST_TOKEN));
+
+    let seen = identities_seen_by_every_route(&configured, &server).await;
+
+    for entry in &seen {
+        assert!(
+            entry.ends_with(TEST_TOKEN),
+            "a client-wide identity must ride every request the client makes: {entry} (all: \
+             {seen:?})"
+        );
+    }
+}
+
+// ==========================================================================
 // The credential goes to the header and nowhere else
 // ==========================================================================
 
@@ -330,6 +435,101 @@ async fn the_identity_survives_a_same_origin_redirect() {
     // The `.expect(1)` mount asserts the second hop arrived WITH the identity.
 }
 
+#[tokio::test]
+async fn a_token_that_cannot_be_a_header_value_is_reported_not_dropped() {
+    // An EMBEDDED control character: a surrounding one is trimmed on the way in
+    // (a trailing newline off a `cat token.txt` is common and harmless), so the
+    // case that survives to the header layer is one inside the value.
+    //
+    // Dropping it was the old behaviour, and it is the worst of the three
+    // available outcomes: the read goes out unidentified, the platform answers
+    // with a scoped-empty page, and the SDK reports "no identity was presented"
+    // — a diagnosis that is true of the wire and false of what the caller did,
+    // sending them to look at their minting code's OUTPUT rather than at the
+    // newline on the end of it.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/decisions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(row_page()))
+        .mount(&server)
+        .await;
+
+    let err = client(
+        &server.uri(),
+        Some(&TEST_TOKEN.replace("SENTINEL", "SENT\rINEL")),
+    )
+    .list_decisions(ListDecisionsOptions::default())
+    .await
+    .expect_err("an unsendable identity must not be silently downgraded to an unscoped read");
+
+    let rendered = err.to_string();
+    assert!(
+        matches!(err, AxonFlowError::ConfigError(_)),
+        "the caller's configuration is what is wrong, and naming it as such is what points them \
+         at the token rather than at the platform: {rendered}"
+    );
+    assert!(
+        !rendered.contains("SENTINEL-USER-TOKEN"),
+        "the token must never appear in an error string — errors are the most-logged text a \
+         client produces: {rendered}"
+    );
+    assert!(
+        rendered.contains("control character"),
+        "the message must name the CLASS of the offending byte, which is what makes it \
+         actionable without echoing the credential: {rendered}"
+    );
+
+    assert!(
+        server.received_requests().await.unwrap().is_empty(),
+        "the request must not have been sent at all. Sending it without the header would be the \
+         same silent unidentified read, merely with an error printed afterwards."
+    );
+}
+
+#[tokio::test]
+async fn the_map_transport_also_refuses_an_off_origin_redirect() {
+    // The MAP client is a SECOND reqwest::Client with its own builder chain, so
+    // it is a second chance to forget the redirect policy — and a mutation run
+    // proved it: deleting `.redirect(..)` from the map_http_client builder left
+    // every test green, because every redirect test drove the other transport.
+    let elsewhere = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/plan/p1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"plan_id": "p1"})))
+        .mount(&elsewhere)
+        .await;
+
+    let origin = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/plan/p1"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/api/v1/plan/p1", elsewhere.uri())),
+        )
+        .mount(&origin)
+        .await;
+
+    let _ = client(&origin.uri(), Some(TEST_TOKEN))
+        .get_plan_status("p1")
+        .await;
+
+    assert!(
+        elsewhere.received_requests().await.unwrap().is_empty(),
+        "the MAP transport followed a cross-origin redirect. Both transports carry the same \
+         credentials and both must stop at the configured origin; a policy applied to one of two \
+         clients is a policy with a hole in it."
+    );
+    assert_eq!(
+        origin.received_requests().await.unwrap()[0]
+            .headers
+            .get(HEADER_USER_TOKEN)
+            .unwrap(),
+        TEST_TOKEN,
+        "precondition: the MAP request must have carried the identity, or the leak this test \
+         guards against could not have happened and the assertion above is vacuous"
+    );
+}
+
 #[test]
 fn the_identity_is_redacted_from_the_config_debug() {
     // A config reaches log lines, panic messages and debugger frames; a
@@ -384,12 +584,33 @@ fn the_header_is_spelled_once_and_stamped_at_one_site() {
                 if trimmed.starts_with("//") {
                     continue;
                 }
-                if (trimmed.contains(".header(") || trimmed.contains(".insert("))
-                    && (trimmed.contains("HEADER_USER_TOKEN") || trimmed.contains("X-User-Token"))
-                {
+                // Case-folded, because a HeaderName literal is conventionally
+                // written lower-case (`HeaderName::from_static` REQUIRES it),
+                // and a census that only knows the canonical spelling would
+                // have read a second stamping site as clean.
+                let folded = trimmed.to_ascii_lowercase();
+                let names_the_header =
+                    trimmed.contains("HEADER_USER_TOKEN") || folded.contains("x-user-token");
+                // Every way this crate's dependencies write a header onto a
+                // request or a HeaderMap. `append` matters as much as `insert`:
+                // it is the one that does NOT replace, so a second stamp added
+                // with it would put TWO X-User-Token values on the wire, which
+                // is worse than the duplicate this guard exists to catch.
+                let writes_a_header = [".header(", ".insert(", ".append(", ".try_insert(", ".try_append("]
+                    .iter()
+                    .any(|verb| trimmed.contains(verb))
+                    // `RequestBuilder::headers(map)` merges a whole HeaderMap.
+                    // Spelled with an argument; the read accessor is spelled
+                    // `.headers()` with none, and matching the bare prefix
+                    // reads every `req.headers().get(..)` assertion as a
+                    // stamping site — a marker that collides with the code
+                    // beside it, which is how a guard comes to fail on its own
+                    // tests.
+                    || (trimmed.contains(".headers(") && !trimmed.contains(".headers()"));
+                if writes_a_header && names_the_header {
                     setters.push(format!("{}:{}", path.display(), index + 1));
                 }
-                if trimmed.contains("\"X-User-Token\"") {
+                if folded.contains("\"x-user-token\"") {
                     literals.push(format!("{}:{}", path.display(), index + 1));
                 }
             }

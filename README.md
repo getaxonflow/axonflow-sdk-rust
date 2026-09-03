@@ -233,6 +233,14 @@ tenant JWT and not `client_secret`. It is sent as `X-User-Token`, is redacted
 from the config's `Debug`, never reaches telemetry, and is never sent to any
 origin but the configured endpoint.
 
+Surrounding whitespace is trimmed, so a trailing newline off a file read is
+harmless. A token carrying an *embedded* control character cannot be an HTTP
+header value at all, and that is reported as an `AxonFlowError::ConfigError`
+naming the offending byte's position and class — never its value — with the
+request not sent. It is deliberately not dropped: a dropped one would make the
+read silently unidentified and the SDK would then report "no identity was
+presented", which is true of the wire and false of what you did.
+
 ### Telling the outcomes apart
 
 "Not found", "not yours" and "no identity resolved" used to arrive as the same
