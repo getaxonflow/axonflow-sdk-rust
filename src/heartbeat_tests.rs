@@ -2113,3 +2113,67 @@ async fn a_registered_adapter_reaches_the_wire() {
         "the registry is the only producer of this array"
     );
 }
+
+#[tokio::test]
+async fn the_cold_path_send_is_awaited_not_spawned() {
+    // THE DEFECT THIS CATCHES IS THE ONE THE FAST-EXIT E2E MEASURED AT 1
+    // DELIVERY IN 12. A spawned send is dropped when the process does not
+    // outlive it, and worse than silence: the `/health` GET reaches the
+    // customer's own platform every time while the checkpoint POST is
+    // cancelled, so the SDK makes an unsolicited request to someone else's
+    // server and records nothing for it.
+    //
+    // Every other test here uses `await_ping`, which POLLS — and polling cannot
+    // tell an awaited send from a spawned one, because it waits for the spawned
+    // one too. That is why the whole suite stayed green under this mutant. This
+    // test asserts the ping has ALREADY arrived at the instant `dispatch`
+    // returns, with no polling and no sleep.
+    //
+    // THE 300 ms DELAY ON /health IS WHAT MAKES THE DEFECT EXPRESSIBLE. With an
+    // instant probe a spawned send can win the race, and the fixture would read
+    // as a disproof of a bug it never gave itself a chance to see.
+    let env = TelemetryTestEnv::on();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(300))
+                .set_body_json(serde_json::json!({"tier": "Community"})),
+        )
+        .mount(&server)
+        .await;
+    mount_checkpoint(&server, 200).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/connectors"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"connectors": []})),
+        )
+        .mount(&server)
+        .await;
+    env.set("AXONFLOW_CHECKPOINT_URL", &checkpoint_url(&server));
+
+    let client =
+        crate::client::AxonFlowClient::new(crate::config::AxonFlowConfig::new(server.uri()))
+            .expect("client");
+
+    // Constructing pinged nothing — the positive control that everything below
+    // is attributable to the request rather than to construction.
+    assert_eq!(
+        count_pings(&seen(&server).await),
+        0,
+        "constructing a client must not ping"
+    );
+
+    client.list_connectors().await.expect("connectors call");
+
+    // NO polling, NO sleep. If the send were spawned, the 300 ms probe would
+    // still be in flight here.
+    assert_eq!(
+        count_pings(&seen(&server).await),
+        1,
+        "the cold-path send must be AWAITED on the caller's task, not spawned: a spawned \
+         ping is lost when the process exits, measured at 1 delivery in 12 for a compiled \
+         one-call binary (runtime-e2e/fast_exit_delivery)"
+    );
+}

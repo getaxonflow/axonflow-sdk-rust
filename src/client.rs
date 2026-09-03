@@ -1,6 +1,6 @@
 use crate::config::{AxonFlowConfig, Mode};
 use crate::error::AxonFlowError;
-use crate::heartbeat::maybe_send_heartbeat;
+use crate::heartbeat::maybe_send_heartbeat_on_request;
 use crate::types::agent::{ClientRequest, ClientResponse};
 use crate::PATH_SEGMENT;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
@@ -610,10 +610,17 @@ impl AxonFlowClient {
     /// 0.10.0 the constructor was the only trigger, so a service that crossed
     /// the 7-day boundary never pinged again.
     ///
-    /// The user's request is never delayed by it: `maybe_send_heartbeat`
-    /// returns after one mutex acquire on the suppressed path (the case on all
-    /// but at most one request per hour), and does every blocking and network
-    /// step on a spawned task.
+    /// On all but at most one request per hour the gate returns after a single
+    /// mutex acquire and the caller is not delayed at all.
+    ///
+    /// On the COLD path the send is AWAITED here rather than spawned, and that
+    /// is deliberate: a spawned ping is dropped when the process does not
+    /// outlive it, measured at 1 delivery in 12 for a compiled one-call binary
+    /// that returns from `main` — while its `/health` GET reached the
+    /// customer's platform every time. That shape is a CLI, a Lambda, a CI
+    /// step, which is the population the first-request trigger exists to make
+    /// visible. Bounded at ~3 s by `HEARTBEAT_TIMEOUT`; see
+    /// `maybe_send_heartbeat_on_request`.
     ///
     /// **`heartbeat.rs` must not route through here.** That module builds its
     /// own [`reqwest::Client`], which is precisely what stops the telemetry
@@ -625,7 +632,7 @@ impl AxonFlowClient {
         req: reqwest::RequestBuilder,
         override_token: Option<&str>,
     ) -> Result<reqwest::Response, AxonFlowError> {
-        maybe_send_heartbeat(&self.config.endpoint, &self.config.mode);
+        maybe_send_heartbeat_on_request(&self.config.endpoint, &self.config.mode).await;
         let (client, built) = req.build_split();
         let mut built = built?;
         self.stamp_identity(&mut built, override_token)?;

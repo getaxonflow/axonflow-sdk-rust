@@ -281,7 +281,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         axonflow_sdk_rust::register_adapter(&"a".repeat(65));
     }
 
-    // The real public entry point.
+    // The real public entry point. Construction no longer pings; the call below
+    // is the trigger.
     let client = AxonFlowClient::new(AxonFlowConfig::new(&endpoint))?;
 
     // THE HEARTBEAT FIRES HERE, not at construction (axonflow-enterprise#3682).

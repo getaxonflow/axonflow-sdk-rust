@@ -12,9 +12,13 @@
 # the wire as a null or a guess, dropping the length cap, dropping the 1-hour
 # guard or its failure backoff, dropping the non-2xx check, following
 # redirects again, going back to a fabricated runtime_version, writing the
-# platform's own deployment mode over the SDK's topology classification, or
+# platform's own deployment mode over the SDK's topology classification,
 # slipping a request past the dispatch funnel using a reqwest spelling the
-# source guards did not think of.
+# source guards did not think of, or — added with the adapter registry
+# (enterprise#3682) — raising a cap, truncating instead of dropping, counting a
+# cap in characters, bypassing the registry, or spawning the cold-path send
+# instead of awaiting it, which loses the ping for exactly the short-lived
+# processes the first-request trigger exists to make visible.
 #
 # Usage:  ./scripts/mutation-gate.sh
 # Exit 0 only when the unmutated tree passes AND every mutant is killed.
@@ -414,6 +418,91 @@ mutant_in "src/client.rs" "the identity header no longer marked sensitive" \
   "client::read_identity_tests::the_identity_is_redacted_from_the_requests_debug_output" \
   '        value.set_sensitive(true);' \
   '        value.set_sensitive(false);'
+
+# ---------------------------------------------------------------------------
+# The adapter registry and the awaited cold path (enterprise#3682).
+# ---------------------------------------------------------------------------
+
+mutant "the relayed-value cap raised past the boundary" \
+  "heartbeat::tests::the_relayed_value_cap_keeps_64_bytes_and_drops_65_whole" \
+  'const MAX_RELAYED_VALUE_LEN: usize = 64;' \
+  'const MAX_RELAYED_VALUE_LEN: usize = 65;'
+
+# A truncated adapter name is a name nothing is running, and the receiver
+# records it as a real value.
+mutant "an over-cap adapter name truncated instead of dropped" \
+  "heartbeat::tests::the_relayed_value_cap_keeps_64_bytes_and_drops_65_whole" \
+  '    if normalized.is_empty() || normalized.len() > MAX_RELAYED_VALUE_LEN {
+        return;
+    }' \
+  '    if normalized.is_empty() {
+        return;
+    }
+    let normalized = if normalized.len() > MAX_RELAYED_VALUE_LEN {
+        normalized[..MAX_RELAYED_VALUE_LEN].to_string()
+    } else {
+        normalized
+    };'
+
+# str::len() is already bytes in Rust, so this SDK gets the distinction for
+# free — but a refactor to chars().count() would be silent without a gate.
+mutant "the cap counted in characters instead of bytes" \
+  "heartbeat::tests::the_cap_counts_bytes_not_characters" \
+  '    if normalized.is_empty() || normalized.len() > MAX_RELAYED_VALUE_LEN {' \
+  '    if normalized.is_empty() || normalized.chars().count() > MAX_RELAYED_VALUE_LEN {'
+
+mutant "the features array cap raised past the boundary" \
+  "heartbeat::tests::the_features_array_is_bounded_to_32_entries" \
+  'const MAX_FEATURES: usize = 32;' \
+  'const MAX_FEATURES: usize = 33;'
+
+mutant "bound_features keeps an over-long entry" \
+  "heartbeat::tests::bound_features_drops_an_overlong_entry_whole" \
+  '        .filter(|f| f.len() <= MAX_FEATURE_BYTES)' \
+  '        .filter(|_f| true)'
+
+# The receiver folds case before matching; sending the fold keeps one spelling
+# on the row. Dropping it puts two.
+mutant "adapter names no longer lowercased" \
+  "heartbeat::tests::names_are_lowercased_trimmed_deduplicated_and_sorted" \
+  '    let normalized = name.trim().to_lowercase();' \
+  '    let normalized = name.trim().to_string();'
+
+# The registry is the ONLY producer of `features`; hardcoding the array is the
+# state this feature replaced.
+mutant "the registry bypassed and features hardcoded empty" \
+  "heartbeat::tests::a_registered_adapter_reaches_the_wire" \
+  '            features: registered_features(),' \
+  '            features: Vec::new(),'
+
+# `adapter:` alone is not an identifier.
+mutant "an empty adapter name accepted" \
+  "heartbeat::tests::an_unusable_name_is_refused_silently" \
+  '    if normalized.is_empty() || normalized.len() > MAX_RELAYED_VALUE_LEN {' \
+  '    if normalized.len() > MAX_RELAYED_VALUE_LEN {'
+
+# THE ONE THAT MATTERS MOST. A spawned send is dropped when the process does
+# not outlive it: measured at 1 delivery in 12 for a compiled one-call binary,
+# while the /health GET reached the platform every time.
+#
+# It needs a test that does NOT poll. Every other heartbeat test uses
+# `await_ping`, which waits for a spawned send too, so the whole suite stayed
+# green under this mutant on the first run of this gate — the named test asserts
+# the ping has already landed the instant `dispatch` returns.
+mutant_in "src/client.rs" "the cold-path send spawned instead of awaited" \
+  "heartbeat::tests::the_cold_path_send_is_awaited_not_spawned" \
+  '        maybe_send_heartbeat_on_request(&self.config.endpoint, &self.config.mode).await;' \
+  '        crate::heartbeat::maybe_send_heartbeat(&self.config.endpoint, &self.config.mode);'
+
+# Constructing a client is not usage. Restoring the constructor trigger makes
+# every adapter registration too late for the first ping again.
+mutant_in "src/client.rs" "the constructor pings again" \
+  "heartbeat::tests::the_first_request_delivers_through_the_spawn_path" \
+  '        Ok(Self {
+            config,' \
+  '        crate::heartbeat::maybe_send_heartbeat(&config.endpoint, &config.mode);
+        Ok(Self {
+            config,'
 
 printf '\n=== mutation gate: %d killed, %d survived\n' "$pass" "$fail"
 if [ "$fail" -ne 0 ]; then

@@ -318,8 +318,10 @@ impl Drop for GateSlot {
 /// This is what makes the request-site trigger affordable. A service handling
 /// thousands of requests a second calls this on every one of them; if the
 /// 1-hour guard is warm it returns here, having spawned nothing. The `stat()`
-/// of the stamp file and all network work happen later, on a spawned task,
-/// at most once per [`HEARTBEAT_GUARD_INTERVAL`].
+/// of the stamp file and all network work happen later — awaited inline on the
+/// request path (see [`maybe_send_heartbeat_on_request`]) or on a spawned task
+/// via [`maybe_send_heartbeat`] — at most once per
+/// [`HEARTBEAT_GUARD_INTERVAL`].
 ///
 /// Returns `None` when this call must not ping.
 fn claim_gate_slot() -> Option<GateSlot> {
@@ -416,6 +418,12 @@ fn prepare_heartbeat(endpoint: &str, mode: &Mode) -> Option<(HeartbeatContext, G
 /// a mutex acquire, and everything that can block (the stamp `stat()`, the
 /// `/health` probe, the POST) runs on a spawned tokio task.
 ///
+/// **This is NOT what the request path uses.** A spawned send is dropped when
+/// the process does not outlive it — measured at 1 delivery in 12 for a
+/// compiled one-call binary — so the client's first request awaits the send
+/// inline via [`maybe_send_heartbeat_on_request`]. This entry point remains for
+/// callers that cannot await.
+///
 /// `AXONFLOW_TELEMETRY=off` short-circuits before any filesystem or network
 /// access — including before the `/health` probe. Anything else allows the
 /// ping; the per-machine 7-day stamp file (in `~/Library/Caches/axonflow/` on
@@ -443,6 +451,54 @@ pub fn maybe_send_heartbeat(endpoint: &str, mode: &Mode) {
         return;
     };
     handle.spawn(gated_send(ctx, slot));
+}
+
+/// The heartbeat trigger for the REQUEST path, awaited inline on the caller's
+/// task rather than spawned.
+///
+/// # Why this is not `maybe_send_heartbeat`
+///
+/// Spawning drops the ping when the process does not outlive it. Measured on a
+/// compiled one-call binary that returns from `main`: the ping was delivered
+/// **1 time in 12** — and worse than "no telemetry", the `/health` GET reached
+/// the customer's own platform every time while the checkpoint POST was
+/// cancelled, so the SDK made an unsolicited request to someone else's server
+/// and recorded nothing for it.
+///
+/// That shape — construct, one call, exit — is a CLI, a Lambda handler, a CI
+/// step. It is the population the first-request trigger exists to make visible,
+/// so losing it here would have defeated the change that introduced it. Go and
+/// Java run their cold path inline for exactly this reason (their issue #1693);
+/// this is the same decision.
+///
+/// # What it costs, stated as a number
+///
+/// The whole telemetry path is bounded by [`HEARTBEAT_TIMEOUT`] (3 s) — the
+/// `/health` probe and the checkpoint POST share that one deadline rather than
+/// stacking — so this can add at most ~3 s to a caller's request. The outer
+/// timeout here is belt-and-braces on top of that internal budget.
+///
+/// It is reachable at most once per [`HEARTBEAT_GUARD_INTERVAL`] per process,
+/// and only actually sends when a ping is DUE, which the 7-day stamp limits to
+/// once per machine per week. On every other request `prepare_heartbeat`
+/// returns `None` after one mutex acquire and this function returns having
+/// awaited nothing.
+pub async fn maybe_send_heartbeat_on_request(endpoint: &str, mode: &Mode) {
+    let Some((ctx, slot)) = prepare_heartbeat(endpoint, mode) else {
+        // Warm gate, or opted out: the overwhelmingly common case, and the
+        // reason this is affordable on a request path at all.
+        return;
+    };
+    // A margin over HEARTBEAT_TIMEOUT so this outer bound never fires FIRST and
+    // pre-empts the inner one — which would skip `record_attempt` and leave the
+    // failure backoff blind to an attempt that really did fail.
+    let bound = HEARTBEAT_TIMEOUT + Duration::from_millis(500);
+    if tokio::time::timeout(bound, gated_send(ctx, slot))
+        .await
+        .is_err()
+    {
+        debug!("Telemetry heartbeat exceeded {bound:?} on the request path; abandoned");
+    }
 }
 
 /// Asynchronous half: the 7-day stamp check and the send. Holds the gate slot
