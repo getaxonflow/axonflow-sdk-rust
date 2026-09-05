@@ -72,17 +72,15 @@ use crate::AxonFlowClient;
 pub use attribute::{Attribute, AttributeMap, AttributeValue};
 pub use types_gen::*;
 
-/// The AuthZEN evaluation endpoint.
-pub const AUTHZEN_PATH: &str = "/api/v1/access/evaluation";
-
-/// The header that negotiates the AxonFlow profile.
-///
-/// The SDK always sends it. AuthZEN 1.0's response is a bare boolean, and the
-/// four-valued state, the obligations and the approval challenge ride in the
-/// response context, which the server returns only to a caller that asked for
-/// it by version. This SDK understands the profile, so there is no reason to
-/// ask for less than it can read.
-pub const AUTHZEN_PROFILE_HEADER: &str = "X-Axonflow-AuthZEN-Profile";
+// `AUTHZEN_PATH` and `AUTHZEN_PROFILE_HEADER` are GENERATED (types_gen, re-exported
+// above through `pub use types_gen::*`). They used to be literals here - the
+// SDK's own copy of two strings the platform also wrote by hand - and nothing
+// compared the copies (axonflow-enterprise#3603). The artifact now carries them,
+// so a platform rename is a regenerate-and-diff failure rather than a runtime
+// 404. The SDK always sends the profile header: AuthZEN 1.0's response is a bare
+// boolean, and the four-valued state, the obligations and the approval challenge
+// ride in the response context, which the server returns only to a caller that
+// asked for it by version.
 
 // ---------------------------------------------------------------------------
 // Refusals

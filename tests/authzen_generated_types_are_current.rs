@@ -119,7 +119,7 @@ fn a_field_shape_drift_in_the_artifact_makes_the_check_fail() {
 /// plus this constant, and the diff is where a reviewer sees it. Verify it by
 /// hand with `shasum -a 256 testdata/authzen-surface.json`.
 const VENDORED_ARTIFACT_SHA256: &str =
-    "7f768b8ad0d6278d3531e1410decad172459808ebda627da44dca5bb4c9f36f8";
+    "36eb608375957ea9e29e68795759992d2e7b892b2683f18a21ec9b781e4fd9ed";
 
 #[test]
 fn the_vendored_artifact_is_the_bytes_this_sdk_was_generated_against() {
