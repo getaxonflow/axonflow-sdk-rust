@@ -12,7 +12,7 @@ The short version: **write new integrations against `evaluate` / `evaluate_all`.
 
 | release | the AuthZEN surface | the legacy decision surface |
 |---|---|---|
-| v10.3.0 (this, crate 0.9.0) | New. Available. Recommended for new integrations. An **adapter** over the same evaluation `POST /api/v1/decide` runs. | Fully supported. Not deprecated. No warnings. Unchanged, byte for byte. |
+| v10.3.0 (crate 0.9.0) | New. Available. Recommended for new integrations. An **adapter** over the same evaluation `POST /api/v1/decide` runs. | Fully supported. Not deprecated. No warnings. Unchanged, byte for byte. |
 | v10.3.x | unchanged | unchanged |
 | **v11.0.0** | the engine behind it becomes the ADR-065 Policy Decision Point. **No wire change.** | **Deprecated.** Still works; wire-stable. Doc + release-note notice. |
 | v12.0.0 | the only decision surface | **Removed.** |

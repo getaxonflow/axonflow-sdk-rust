@@ -73,6 +73,17 @@ blue ">>> Community stack agent git ref: ${AGENT_GIT_REF}"
 # build the expected X-Axonflow-Client value.
 SDK_VERSION=$(grep -m1 '^version = ' "${SDK_ROOT}/Cargo.toml" | sed -E 's/version = "([^"]+)"/\1/')
 blue ">>> SDK version: ${SDK_VERSION}"
+# EXPORTED, not just printed. Until this line the helper was handed nothing:
+# it asserted only that X-Axonflow-Client STARTS WITH "sdk-rust/", so this
+# script read the crate version out of Cargo.toml, echoed it, and threw it
+# away. A release that bumped Cargo.toml and shipped a binary still emitting
+# the previous version passed this suite, which is the one thing the suite
+# exists to be able to say.
+if [ -z "${SDK_VERSION}" ]; then
+  red "FAIL: could not read version from ${SDK_ROOT}/Cargo.toml; the assertion below would be vacuous"
+  exit 1
+fi
+export AXONFLOW_EXPECTED_SDK_VERSION="${SDK_VERSION}"
 
 blue ">>> Building + running helper (this exercises the SDK code path)"
 OUTPUT=$(

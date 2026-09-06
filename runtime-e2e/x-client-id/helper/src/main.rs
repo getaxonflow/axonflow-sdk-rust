@@ -86,10 +86,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if xcid.as_deref() != Some(tenant.as_str()) {
         failed.push(format!("X-Client-ID: want {:?}, got {:?}", tenant, xcid));
     }
-    if !xac.as_deref().is_some_and(|v| v.starts_with("sdk-rust/")) {
+    // The FULL value, not the prefix. A prefix check passes on every version
+    // this crate has ever emitted, so it could not tell a release that bumped
+    // Cargo.toml from one that did not -- and the runner had already read the
+    // crate version out of Cargo.toml and thrown it away. The expected value is
+    // passed in rather than read from CARGO_PKG_VERSION here, because this
+    // helper is its own crate: CARGO_PKG_VERSION would be the HELPER's version
+    // and the assertion would compare the SDK against something that never
+    // moves.
+    let want_xac = std::env::var("AXONFLOW_EXPECTED_SDK_VERSION")
+        .map(|v| format!("sdk-rust/{v}"))
+        .map_err(|_| "AXONFLOW_EXPECTED_SDK_VERSION must be set by the runner; \
+                      without it this assertion has nothing to compare against")?;
+    if xac.as_deref() != Some(want_xac.as_str()) {
         failed.push(format!(
-            "X-Axonflow-Client: want starts-with 'sdk-rust/', got {:?}",
-            xac
+            "X-Axonflow-Client: want {:?}, got {:?}",
+            want_xac, xac
         ));
     }
     if !auth.as_deref().is_some_and(|v| v.starts_with("Basic ")) {
