@@ -47,6 +47,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   This is the FIRST producer of `features` here — the array was a hardcoded `[]`.
 
+### Fixed
+
+- **`runtime-e2e/x-client-id` read the crate version and threw it away.** Its
+  runner greps `version` out of `Cargo.toml`, prints it twice, and passed it
+  nowhere; the helper asserted only that `X-Axonflow-Client` **starts with**
+  `sdk-rust/`. A prefix check passes on every version this crate has ever
+  emitted, so a release that bumped `Cargo.toml` and shipped a binary still
+  emitting the previous version passed the one suite that exists to be able to
+  say otherwise. The runner now exports the value it already computed - and
+  refuses if it is empty, so the assertion cannot go vacuous - and the helper
+  compares the whole header. The expected value is passed in rather than read
+  from `CARGO_PKG_VERSION`, because the helper is its own crate and
+  `CARGO_PKG_VERSION` there is the HELPER's version: a constant that never
+  moves, which would look like an assertion and be one against nothing.
+
 ### Changed
 
 - **The telemetry heartbeat now fires on the client's first outbound request
