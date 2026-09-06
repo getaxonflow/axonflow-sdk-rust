@@ -17,6 +17,8 @@ fn base_artifact() -> serde_json::Value {
         "contract_schema_version": "2026-08-29",
         "source_schema_id": "https://example.invalid/schema.json",
         "source_schema_sha256": "sha256:00",
+        "profile_header": "X-Example-Profile",
+        "route": {"method": "POST", "path": "/api/v1/example/evaluation"},
         "enums": [{"name": "state", "values": ["ALLOW", "DENY"]}],
         "types": [
             {
@@ -139,6 +141,66 @@ fn requires_members_is_checked_against_the_referenced_type_not_the_declaring_one
     let e = rejection(a);
     assert!(e.contains("identifier"), "{e}");
     assert!(e.contains("authzen_leaf"), "{e}");
+}
+
+#[test]
+fn the_route_and_header_reach_the_output_as_the_constants_the_client_calls() {
+    // The generated client sends to AUTHZEN_PATH with AUTHZEN_PROFILE_HEADER;
+    // both must come from the artifact, never from a literal in the emitter.
+    let out = render(&base_artifact()).expect("the base artifact emits");
+    assert!(
+        out.contains("pub const AUTHZEN_PATH: &str = \"/api/v1/example/evaluation\";"),
+        "{out}"
+    );
+    assert!(
+        out.contains("pub const AUTHZEN_PROFILE_HEADER: &str = \"X-Example-Profile\";"),
+        "{out}"
+    );
+}
+
+#[test]
+fn an_artifact_without_a_route_is_refused_rather_than_defaulted() {
+    // A client with nowhere to send a request is not a client; the member is
+    // required, and its absence is the currency gate refusing an old artifact.
+    let mut a = base_artifact();
+    a.as_object_mut().unwrap().remove("route");
+    let e = rejection(a);
+    assert!(e.contains("route"), "{e}");
+}
+
+#[test]
+fn an_artifact_without_a_profile_header_is_refused_rather_than_defaulted() {
+    let mut a = base_artifact();
+    a.as_object_mut().unwrap().remove("profile_header");
+    let e = rejection(a);
+    assert!(e.contains("profile_header"), "{e}");
+}
+
+#[test]
+fn a_route_that_is_not_post_or_not_absolute_is_refused() {
+    for (method, path) in [
+        ("GET", "/api/v1/example/evaluation"),
+        ("POST", "api/v1/example/evaluation"),
+        ("POST", "/api/v1/example/evaluation/"),
+    ] {
+        let mut a = base_artifact();
+        a["route"] = serde_json::json!({"method": method, "path": path});
+        let e = rejection(a);
+        assert!(
+            e.contains("want POST and an absolute path"),
+            "{method} {path}: {e}"
+        );
+    }
+}
+
+#[test]
+fn a_profile_header_that_is_not_a_header_name_is_refused() {
+    for header in ["", "X-Example Profile", "X-Example-Profile:"] {
+        let mut a = base_artifact();
+        a["profile_header"] = serde_json::json!(header);
+        let e = rejection(a);
+        assert!(e.contains("is not a header name"), "{header:?}: {e}");
+    }
 }
 
 #[test]
