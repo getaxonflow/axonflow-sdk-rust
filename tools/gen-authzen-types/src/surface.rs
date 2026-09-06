@@ -18,12 +18,26 @@ pub struct Surface {
     pub artifact: String,
     pub artifact_version: u32,
     pub profile: String,
+    /// The request header the profile is negotiated with and the one route the
+    /// surface is served on, both from the platform's contract constants
+    /// through the artifact, so this SDK generates the path and header it
+    /// calls rather than transcribing them (axonflow-enterprise#3603).
+    pub profile_header: String,
+    pub route: Route,
     pub contract_schema_version: String,
     #[allow(dead_code)]
     pub source_schema_id: String,
     pub source_schema_sha256: String,
     pub enums: Vec<Enum>,
     pub types: Vec<Type>,
+}
+
+/// The HTTP method and path of the surface's single route.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Route {
+    pub method: String,
+    pub path: String,
 }
 
 /// A closed set of string values.
@@ -108,6 +122,26 @@ fn err<T>(msg: impl Into<String>) -> Result<T, SurfaceError> {
 pub fn parse_surface(raw: &[u8]) -> Result<Surface, SurfaceError> {
     let s: Surface = serde_json::from_slice(raw)
         .map_err(|e| SurfaceError(format!("parsing the surface artifact: {e}")))?;
+
+    // The route and header are what the generated client CALLS. An artifact
+    // without them would generate a client with nowhere to send a request, so
+    // they are required, not defaulted (axonflow-enterprise#3603).
+    if s.route.method != "POST" || !s.route.path.starts_with('/') || s.route.path.ends_with('/') {
+        return err(format!(
+            "the artifact's route is {:?} {:?}; want POST and an absolute path with no trailing slash",
+            s.route.method, s.route.path
+        ));
+    }
+    if s.profile_header.is_empty()
+        || s.profile_header
+            .chars()
+            .any(|c| c.is_whitespace() || c == ':')
+    {
+        return err(format!(
+            "the artifact's profile_header {:?} is not a header name",
+            s.profile_header
+        ));
+    }
 
     let mut types: BTreeSet<&str> = BTreeSet::new();
     for t in &s.types {

@@ -234,8 +234,16 @@ fn write_header(b: &mut String, s: &Surface) {
          /// The contract version these types were generated from. It is the value the\n\
          /// server echoes in [`AuthZenResponseContext::schema_version`].\n\
          pub const AUTHZEN_CONTRACT_SCHEMA_VERSION: &str = {:?};\n\
+         \n\
+         /// The one route the AuthZEN surface is served on, and the request header the\n\
+         /// profile is negotiated with. Both are generated from the platform's contract\n\
+         /// through the artifact, not written here: a rename on the platform is a\n\
+         /// regenerate-and-diff failure in this SDK, not a 404 in production\n\
+         /// (axonflow-enterprise#3603).\n\
+         pub const AUTHZEN_PATH: &str = {:?};\n\
+         pub const AUTHZEN_PROFILE_HEADER: &str = {:?};\n\
          \n",
-        s.profile, s.contract_schema_version
+        s.profile, s.contract_schema_version, s.route.path, s.profile_header
     );
 }
 

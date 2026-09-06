@@ -49,6 +49,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AUTHZEN_PATH` and `AUTHZEN_PROFILE_HEADER` are generated from the surface
+  artifact, not written here (axonflow-enterprise#3603 follow-up).** The route
+  (`/api/v1/access/evaluation`) and the negotiation header
+  (`X-Axonflow-AuthZEN-Profile`) were literals in this SDK, in the other four
+  SDKs and in the platform's handler, with nothing comparing the copies; a
+  rename on the platform would have surfaced as a 404 in whichever SDK next had
+  a live run. The platform now publishes both in `authzen-surface.json`
+  (`route`, `profile_header`); the generator requires them and emits the two
+  constants; the `authzen` module re-exports them through `pub use types_gen::*` under the names it always had.
+  The vendored artifact is refreshed to the publishing platform commit. No wire
+  change.
+
 - **The telemetry heartbeat now fires on the client's first outbound request
   rather than at client construction.** A client that is constructed and never
   used no longer pings — a heartbeat is a claim about usage.
