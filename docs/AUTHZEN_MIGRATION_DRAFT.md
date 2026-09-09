@@ -55,9 +55,19 @@ Practically: port one call, run it, and read the pointers. The refusal names the
 
 2. **A refusal is a different type from a denial.** `Err(AuthZenEvaluationError::Refused(..))` versus `Ok(decision)` with `allowed() == false`. Legacy callers that branched on a boolean will need one more arm. Callers that treated a transport failure as a denial were already wrong, and this makes it a compile error rather than a production incident.
 
+## Not yet expressible
+
+An **end-user subject**. `AuthZenSubject.r#type` must be `"gateway"` today, because an
+end-user subject would have to be trusted from caller-supplied JSON - an
+impersonation surface - or silently dropped, which is the fail-open this surface
+exists to prevent. It arrives with the identity plane at v11. Integrations that
+authorize per end user should stay on the legacy `user_token` path until then.
+
+Delete this section when the end-user subject ships, which is the same release
+that removes the DRAFT marker below.
+
 ## What has not been decided
 
-- Whether an end-user subject becomes available at v11 or later, and what the identity plane requires of a caller to bind one.
 - Whether `resource.id` for an `llm` target widens to name a provider and model, which depends on the evaluator learning to read them.
 
-None of these should be planned around until this file loses its DRAFT marker.
+This should not be planned around until this file loses its DRAFT marker.
