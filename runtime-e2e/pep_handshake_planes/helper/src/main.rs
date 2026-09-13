@@ -311,34 +311,57 @@ async fn planes(run: &mut Run) {
     }
 
     println!("== /api/request does not read the declaration");
+    // This shows only that the platform counts no declaration there. That the
+    // SDK does not SEND one there is proved on the wire by
+    // tests/pep_handshake_test.rs, the_declaration_never_reaches_api_request.
     run.counted(
-        "proxy_llm_call from a declaring client",
+        "proxy_llm_call from a declaring client (the platform counts nothing there)",
         c.proxy_llm_call("", INJECTION, "chat", HashMap::new()),
         &[],
     )
     .await;
 
-    println!("== a declaration the platform would refuse fails before anything is sent");
-    let before = run.scrape().await;
-    let refused = PEPHandshake::new("Gateway:1", AUDIENCE, Vec::new());
-    let after = run.scrape().await;
-    match refused {
+    println!("== a declaration the platform would refuse fails at construction");
+    match PEPHandshake::new("Gateway:1", AUDIENCE, Vec::new()) {
         Err(e) => {
             println!("  refused: {e}");
             run.check(e.pointer() == "/pep_id", "the refusal names /pep_id");
         }
         Ok(_) => run.check(false, "an upper-case pep_id with a colon was accepted"),
     }
-    run.check(
-        moved(&before, &after).is_empty(),
-        "nothing reached the agent",
-    );
+}
+
+/// A client that declares only `field_mask@1`: it cannot discharge the
+/// mandatory `field_redact` a redact override attaches.
+fn masking_only() -> PEPHandshake {
+    PEPHandshake::new(
+        "sdk-rust-e2e-masking",
+        AUDIENCE,
+        [PEPCapability::new("field_mask", 1)],
+    )
+    .expect("a valid declaration")
+}
+
+/// Whether one of the platform's reasons is `code`. The platform writes a
+/// reason as `"<code>: <detail>"` (decision_enforcing_seam.go) and may write
+/// the bare code, so a reason is matched by its code, never compared whole.
+fn has_reason(d: &DecideResponse, code: &str) -> bool {
+    d.reasons.as_deref().unwrap_or_default().iter().any(|r| {
+        r == code
+            || r.strip_prefix(code)
+                .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+fn refused_unsupported(d: &DecideResponse) -> bool {
+    d.verdict == "deny" && has_reason(d, "unsupported_obligation")
 }
 
 async fn refusal(run: &mut Run) {
     let agent = run.agent.clone();
     let bare = client(&agent, None);
     let c = client(&agent, Some(declared()));
+    let masking = client(&agent, Some(masking_only()));
 
     println!("== under the organization's pii=redact override");
     if let Some(d) = run
@@ -351,13 +374,25 @@ async fn refusal(run: &mut Run) {
     {
         println!("  {}", describe(&d));
         run.check(
-            d.verdict == "deny"
-                && d.reasons
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|r| r == "unsupported_obligation"),
+            refused_unsupported(&d),
             "the undeclared caller is refused unsupported_obligation",
+        );
+    }
+    if let Some(d) = run
+        .counted(
+            "a field_mask@1-only client's decide",
+            masking.decide(decide_request(WITH_PII)),
+            &[("accepted", "decision")],
+        )
+        .await
+    {
+        // The edition matters for the Enterprise-only capability refusal, not
+        // for this one: the engine judges the mandatory obligation against the
+        // declared capabilities on every edition.
+        println!("  {}", describe(&d));
+        run.check(
+            refused_unsupported(&d),
+            "a declaration without field_redact is refused unsupported_obligation on this edition too",
         );
     }
     if let Some(d) = run
@@ -399,12 +434,7 @@ async fn probe(agent: &str, want_present: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let refused = d.verdict == "deny"
-        && d.reasons
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .any(|r| r == "unsupported_obligation");
+    let refused = refused_unsupported(&d);
     println!("probe: {}", describe(&d));
     if refused == want_present {
         ExitCode::SUCCESS
@@ -441,5 +471,67 @@ async fn main() -> ExitCode {
             println!("  - {f}");
         }
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn denied_with(reasons: &[&str]) -> DecideResponse {
+        DecideResponse {
+            verdict: "deny".into(),
+            reasons: Some(reasons.iter().map(|r| r.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    /// The platform's own shape: `"<code>: <detail>"`.
+    #[test]
+    fn a_reason_with_detail_is_matched_by_its_code() {
+        let d = denied_with(&[
+            "unsupported_obligation: the mandatory field_redact@v1 obligation cannot be discharged",
+        ]);
+        assert!(has_reason(&d, "unsupported_obligation"));
+        assert!(refused_unsupported(&d));
+    }
+
+    #[test]
+    fn a_bare_code_is_matched() {
+        assert!(has_reason(
+            &denied_with(&["unsupported_obligation"]),
+            "unsupported_obligation"
+        ));
+    }
+
+    #[test]
+    fn a_longer_code_sharing_the_prefix_is_not_matched() {
+        assert!(!has_reason(
+            &denied_with(&["unsupported_obligation_extra: detail"]),
+            "unsupported_obligation"
+        ));
+    }
+
+    #[test]
+    fn another_code_is_not_matched() {
+        assert!(!has_reason(
+            &denied_with(&["explicit_constraint: blocked"]),
+            "unsupported_obligation"
+        ));
+    }
+
+    #[test]
+    fn no_reasons_is_not_a_match() {
+        assert!(!has_reason(
+            &DecideResponse::default(),
+            "unsupported_obligation"
+        ));
+    }
+
+    #[test]
+    fn a_refusal_needs_a_deny_verdict() {
+        let mut d = denied_with(&["unsupported_obligation: detail"]);
+        d.verdict = "allow".into();
+        assert!(!refused_unsupported(&d));
     }
 }

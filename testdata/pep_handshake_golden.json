@@ -1,5 +1,5 @@
 {
-  "_comment": "PEP capability handshake golden vectors. Each header was produced by the platform's own encoder and accepted by its decoder; pep_handshake.rs asserts the SDK produces the same bytes. Regenerate at a newer platform commit with the scratch program described in the PR that added this file.",
+  "_comment": "PEP capability handshake golden vectors. Each header was produced by the platform's own encoder and accepted by its decoder; src/pep_handshake.rs asserts the SDK produces the same bytes. Regenerate at a newer platform commit with testdata/pep_handshake_golden_derive.go.txt (its header says how).",
   "source": "platform/decision/contract/handshake.go: PEPHandshake.Encode, each value round-tripped through DecodePEPHandshake",
   "platform_commit": "857455033b2ea4686835eac037fca41f948e4515",
   "python_parity": {

@@ -39,4 +39,13 @@ export AXONFLOW_CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 # The proof must not fire a telemetry ping at the production checkpoint.
 export AXONFLOW_TELEMETRY=off
 
-cargo run --quiet --manifest-path "${HERE}/helper/Cargo.toml" -- "${1:-planes}"
+# Built first and outside the timeout, so a cold build does not count against
+# the run; the run is bounded so a hung agent call cannot block a runner.
+cargo build --quiet --manifest-path "${HERE}/helper/Cargo.toml" || { echo "FAIL: the helper did not build"; exit 1; }
+timeout 180 cargo run --quiet --manifest-path "${HERE}/helper/Cargo.toml" -- "${1:-planes}"
+rc=$?
+case "$rc" in
+  0|1) exit "$rc" ;;
+  124) echo "FAIL: the helper did not finish within 180s"; exit 1 ;;
+  *) echo "FAIL: the helper exited $rc"; exit 1 ;;
+esac

@@ -540,6 +540,14 @@ impl AxonFlowClient {
         } else {
             Some(trimmed.to_string())
         };
+        self.derived(config)
+    }
+
+    /// A client presenting `config`, sharing this one's transport and cache.
+    ///
+    /// The one place a derived client is built, so `as_user` and
+    /// `with_pep_handshake` cannot drift on what a derivation shares.
+    fn derived(&self, config: AxonFlowConfig) -> Self {
         Self {
             config,
             http_client: self.http_client.clone(),
@@ -584,12 +592,7 @@ impl AxonFlowClient {
     pub fn with_pep_handshake(&self, handshake: PEPHandshake) -> Self {
         let mut config = self.config.clone();
         config.pep_handshake = Some(handshake);
-        Self {
-            config,
-            http_client: self.http_client.clone(),
-            map_http_client: self.map_http_client.clone(),
-            cache: self.cache.clone(),
-        }
+        self.derived(config)
     }
 
     /// The PEP capability declaration's header, for the call sites whose route
@@ -780,6 +783,20 @@ impl AxonFlowClient {
         }
         let resp = self.dispatch(request, None).await?;
         Self::check_status(resp).await
+    }
+
+    /// [`checked_post_json`](Self::checked_post_json) to a route that reads the
+    /// PEP capability declaration, carrying this client's declaration when it
+    /// has one. The one POST that attaches it; the AuthZEN evaluation, which
+    /// posts pre-encoded bytes, attaches it through the same accessor.
+    pub(crate) async fn checked_post_json_declaring<T: serde::Serialize + ?Sized>(
+        &self,
+        url: &str,
+        body: &T,
+    ) -> Result<reqwest::Response, AxonFlowError> {
+        let headers: Vec<(&str, &str)> = self.pep_handshake_header().into_iter().collect();
+        self.checked_post_json_with_headers(url, body, &headers)
+            .await
     }
 
     /// Crate-internal GET that returns the raw response without translating

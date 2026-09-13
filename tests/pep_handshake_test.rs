@@ -2,10 +2,11 @@
 //! declaration they carry, and which never carry it.
 //!
 //! The platform reads `X-Axonflow-PEP-Handshake` on `/api/v1/decide`, the
-//! AuthZEN evaluation route (single and bulk) and the MCP check routes. This
-//! SDK reaches check-input only as the engine round-trip of `fulfill_request`
-//! and `decide_and_fulfill`, and has no call that sends check-output. Every
-//! other route, `/api/request` above all, must never see the header.
+//! AuthZEN evaluation route (single and bulk) and the MCP check routes, and on
+//! the gateway pre-check and MCP `tools/call`. This SDK reaches check-input
+//! only as the engine round-trip of `fulfill_request` and `decide_and_fulfill`,
+//! and calls neither check-output, the pre-check nor `tools/call`. Every other
+//! route, `/api/request` above all, must never see the header.
 //!
 //! These pin what the CLIENT sends. The proof that the platform READ it lives
 //! in `runtime-e2e/pep_handshake_planes/`, which counts the agent's own
@@ -314,10 +315,12 @@ async fn a_client_with_no_declaration_sends_no_header_on_any_plane() {
 async fn the_declaration_never_reaches_api_request() {
     let server = allowing_platform().await;
     let c = client(&server, Some(declared()));
-    c.proxy_llm_call("", "hello", "chat", HashMap::new())
+    let _ = c
+        .proxy_llm_call("", "hello", "chat", HashMap::new())
         .await
         .expect("a 200 envelope");
-    c.query_connector("", "postgres", "SELECT 1", HashMap::new())
+    let _ = c
+        .query_connector("", "postgres", "SELECT 1", HashMap::new())
         .await
         .expect("a 200 envelope");
     let at_request = handshakes_at(&server, "/api/request").await;
@@ -488,81 +491,214 @@ async fn the_config_builder_declares_it() {
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("readable src dir") {
         let p = entry.expect("dir entry").path();
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string());
         if p.is_dir() {
             rust_files(&p, out);
-        } else if p.extension().is_some_and(|e| e == "rs") {
+        } else if p.extension().is_some_and(|e| e == "rs")
+            && !name.is_some_and(|n| n.ends_with("_tests.rs"))
+        {
             out.push(p);
         }
     }
 }
 
-/// A source file's shipped code: comment lines dropped, and everything from a
-/// `#[cfg(test)]` module on cut, since a test module is where a route is named
-/// without being called.
-fn shipped_code(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut kept = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let next = lines.get(i + 1).map_or("", |l| l.trim_start());
-        if line.trim() == "#[cfg(test)]" && next.starts_with("mod ") {
-            break;
-        }
-        if !line.trim_start().starts_with("//") {
-            kept.push(*line);
-        }
-    }
-    kept.join("\n")
+/// What one source file's SHIPPED code names, read as syntax rather than text,
+/// so whitespace, a line break or a fully-qualified call cannot hide a use.
+///
+/// Every identifier counts, including those in a macro body, where URLs and
+/// header names are formatted (`format!("{}{}", base, PATH)`), and so does
+/// every string literal. Attributes (doc comments, `cfg`s) are not code and are
+/// skipped, and so is every item marked `#[cfg(test)]`, since a test is where a
+/// route is named without being called.
+#[derive(Default)]
+struct Census {
+    idents: std::collections::BTreeMap<String, usize>,
+    strings: Vec<String>,
 }
 
-/// `(path relative to the crate, occurrences of needle in shipped code)` for
-/// every source file where it occurs.
-fn census(needle: &str) -> Vec<(String, usize)> {
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("cfg") && a.parse_args::<syn::Ident>().is_ok_and(|i| i == "test")
+    })
+}
+
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::Impl(i) => &i.attrs,
+        syn::Item::Macro(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Use(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for Census {
+    fn visit_attribute(&mut self, _: &'ast syn::Attribute) {}
+
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        if !is_cfg_test(item_attrs(item)) {
+            syn::visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+        if !is_cfg_test(&f.attrs) {
+            syn::visit::visit_impl_item_fn(self, f);
+        }
+    }
+
+    fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+        *self.idents.entry(ident.to_string()).or_default() += 1;
+    }
+
+    fn visit_lit_str(&mut self, s: &'ast syn::LitStr) {
+        self.strings.push(s.value());
+    }
+
+    fn visit_macro(&mut self, m: &'ast syn::Macro) {
+        syn::visit::visit_macro(self, m);
+        let text = m.tokens.to_string();
+        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if !word.is_empty() {
+                *self.idents.entry(word.to_string()).or_default() += 1;
+            }
+        }
+        self.strings.push(text);
+    }
+}
+
+/// `(path relative to the crate, count)` for every shipped source file where
+/// `pick` counts something.
+fn census_of(pick: impl Fn(&Census) -> usize) -> Vec<(String, usize)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     rust_files(&root.join("src"), &mut files);
-    let mut hits: Vec<(String, usize)> = files
-        .iter()
-        .filter_map(|f| {
-            let text = std::fs::read_to_string(f).expect("readable source");
-            let n = shipped_code(&text).matches(needle).count();
+    assert!(files.len() > 5, "the source walk found suspiciously little");
+    let mut hits = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).expect("readable source");
+        let parsed = syn::parse_file(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+        let mut census = Census::default();
+        syn::visit::Visit::visit_file(&mut census, &parsed);
+        let n = pick(&census);
+        if n > 0 {
             let rel = f
                 .strip_prefix(root)
                 .expect("under the crate")
                 .to_string_lossy()
                 .replace('\\', "/");
-            (n > 0).then_some((rel, n))
-        })
-        .collect();
+            hits.push((rel, n));
+        }
+    }
     hits.sort();
     hits
 }
 
-/// The declaration is attached by exactly three call sites: `decide` and the
-/// check-input fulfillment in `pep.rs`, and the AuthZEN evaluation's one
-/// transport path. A new call site (a typed-policy route, `/api/request`) must
-/// fail this until someone decides the platform reads it there.
-#[tokio::test]
-async fn the_declaration_is_attached_at_exactly_the_three_resolving_call_sites() {
+fn ident(name: &'static str) -> impl Fn(&Census) -> usize {
+    move |c| c.idents.get(name).copied().unwrap_or(0)
+}
+
+fn literal(fragment: &'static str) -> impl Fn(&Census) -> usize {
+    move |c| {
+        c.strings
+            .iter()
+            .filter(|s| s.to_ascii_lowercase().contains(fragment))
+            .count()
+    }
+}
+
+fn pins(expected: &[(&str, usize)]) -> Vec<(String, usize)> {
+    expected.iter().map(|(f, n)| (f.to_string(), *n)).collect()
+}
+
+/// A positive control for the census itself: it sees shipped code, and it does
+/// not see a `#[cfg(test)]` module. `pep.rs` names the check-output path in its
+/// test module, so a census that read test code would count it there.
+#[test]
+fn the_census_sees_shipped_code_and_skips_test_modules() {
+    assert!(
+        census_of(ident("dispatch"))
+            .iter()
+            .any(|(f, n)| f == "src/client.rs" && *n > 0),
+        "the census must see client.rs's dispatch funnel"
+    );
+    let in_pep_tests = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/pep.rs"))
+        .expect("pep.rs")
+        .matches("/api/v1/mcp/check-output")
+        .count();
+    assert!(
+        in_pep_tests >= 2,
+        "the control needs pep.rs to name the path in its tests too"
+    );
     assert_eq!(
-        census(".pep_handshake_header()"),
-        vec![
-            ("src/authzen/mod.rs".to_string(), 1),
-            ("src/pep.rs".to_string(), 2)
-        ]
+        census_of(literal("check-output")),
+        pins(&[("src/pep.rs", 1)])
+    );
+}
+
+/// The declaration is attached through ONE accessor, `pep_handshake_header`,
+/// called by the one declaring POST (used by `decide` and the check-input
+/// fulfillment) and by the AuthZEN evaluation's transport path. A new call site
+/// (a typed-policy route, `/api/request`) fails this, in any spelling, until
+/// someone decides the platform reads the declaration there.
+#[test]
+fn the_declaration_is_attached_through_one_accessor_and_one_declaring_post() {
+    assert_eq!(
+        census_of(ident("pep_handshake_header")),
+        pins(&[("src/authzen/mod.rs", 1), ("src/client.rs", 2)])
+    );
+    assert_eq!(
+        census_of(ident("checked_post_json_declaring")),
+        pins(&[("src/client.rs", 1), ("src/pep.rs", 2)])
+    );
+}
+
+/// Nothing but the accessor names the header, so a new site cannot attach it
+/// by writing the header name itself.
+#[test]
+fn only_the_accessor_names_the_header() {
+    assert_eq!(
+        census_of(ident("PEP_HANDSHAKE_HEADER")),
+        pins(&[
+            ("src/client.rs", 2),
+            ("src/lib.rs", 1),
+            ("src/pep_handshake.rs", 3)
+        ])
+    );
+    assert_eq!(
+        census_of(literal("pep-handshake")),
+        pins(&[("src/pep_handshake.rs", 1)])
     );
 }
 
 /// This SDK has no call that sends MCP check-output: the path is named once,
 /// by its constant, and the constant is only defined and re-exported. If a
 /// call is added, the declaration must be attached to it too.
-#[tokio::test]
-async fn no_call_site_sends_mcp_check_output() {
+#[test]
+fn no_call_site_sends_mcp_check_output() {
     assert_eq!(
-        census("/api/v1/mcp/check-output"),
-        vec![("src/pep.rs".to_string(), 1)]
+        census_of(literal("check-output")),
+        pins(&[("src/pep.rs", 1)])
     );
     assert_eq!(
-        census("RESPONSE_REDACTION_PATH"),
-        vec![("src/lib.rs".to_string(), 1), ("src/pep.rs".to_string(), 1)]
+        census_of(ident("RESPONSE_REDACTION_PATH")),
+        pins(&[("src/lib.rs", 1), ("src/pep.rs", 1)])
     );
+}
+
+/// The platform also reads the declaration on the gateway pre-check and on MCP
+/// `tools/call`. This SDK calls neither; if a call is added, the declaration
+/// must be attached to it too.
+#[test]
+fn no_call_site_reaches_the_other_planes_that_read_it() {
+    for route in ["/api/policy/pre-check", "/api/v1/mcp-server", "tools/call"] {
+        assert_eq!(census_of(literal(route)), pins(&[]), "{route}");
+    }
 }

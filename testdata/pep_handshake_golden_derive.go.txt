@@ -1,0 +1,80 @@
+// Regenerates testdata/pep_handshake_golden.json's vectors from the platform's
+// own encoder. Kept as .go.txt so no tool in this repository treats it as Go.
+//
+// At a platform commit <SHA> of the enterprise repository:
+//
+//   git archive <SHA> platform/decision | tar -x -C <scratch>
+//   mkdir -p <scratch>/platform/decision/cmd/golden
+//   cp this file <scratch>/platform/decision/cmd/golden/main.go
+//   cd <scratch>/platform/decision && go run ./cmd/golden > vectors.json
+//
+// Each header is produced by contract.PEPHandshake.Encode and round-tripped
+// through contract.DecodePEPHandshake. Put the vectors under "vectors" in the
+// golden file and set "platform_commit" to <SHA>.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"axonflow/platform/decision/contract"
+)
+
+type vector struct {
+	ID           string                `json:"id"`
+	PEPID        string                `json:"pep_id"`
+	Audience     string                `json:"audience"`
+	Capabilities []contract.Capability `json:"capabilities"`
+	Header       string                `json:"header"`
+}
+
+func c(t string, v int) contract.Capability {
+	return contract.Capability{Type: contract.ObligationType(t), Version: v}
+}
+
+func main() {
+	// The 64-capability construction: every declared type in canonical order
+	// at version 1, then 2, and so on, stopping at the count cap.
+	var sixtyFour []contract.Capability
+	types := contract.AllObligationTypes()
+	for v := 1; v <= 5; v++ {
+		for _, t := range types {
+			if len(sixtyFour) < contract.MaxPEPHandshakeCapabilities {
+				sixtyFour = append(sixtyFour, contract.Capability{Type: t, Version: v})
+			}
+		}
+	}
+	in := []vector{
+		{ID: "empty", PEPID: "sdk-python", Audience: "https://pep.example.test", Capabilities: []contract.Capability{}},
+		{ID: "unsorted", PEPID: "gateway.request-1", Audience: "urn:example:aud", Capabilities: []contract.Capability{
+			c("field_redact", 2), c("approval_challenge", 1), c("field_redact", 1), c("notification", 3)}},
+		{ID: "minimal", PEPID: "a", Audience: "A", Capabilities: []contract.Capability{c("step_up_authentication", 1)}},
+		{ID: "sixty-four", PEPID: "p", Audience: "a", Capabilities: sixtyFour},
+	}
+	for i := range in {
+		h := contract.PEPHandshake{
+			ProfileVersion: contract.PEPHandshakeProfileV1,
+			PEPID:          in[i].PEPID,
+			Audience:       in[i].Audience,
+			Capabilities:   in[i].Capabilities,
+		}
+		enc, ref := h.Encode()
+		if ref != nil {
+			fmt.Fprintf(os.Stderr, "encode %s: %s\n", in[i].ID, ref.Error())
+			os.Exit(1)
+		}
+		if _, ref := contract.DecodePEPHandshake(enc); ref != nil {
+			fmt.Fprintf(os.Stderr, "decode %s: %s\n", in[i].ID, ref.Error())
+			os.Exit(1)
+		}
+		in[i].Header = enc
+	}
+	fmt.Fprintf(os.Stderr, "types=%d sixty-four=%d\n", len(types), len(sixtyFour))
+	out := json.NewEncoder(os.Stdout)
+	out.SetIndent("", "  ")
+	if err := out.Encode(in); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

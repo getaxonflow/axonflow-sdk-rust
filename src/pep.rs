@@ -146,14 +146,11 @@ impl AxonFlowClient {
     /// ```
     pub async fn decide(&self, request: DecideRequest) -> Result<DecideResponse, AxonFlowError> {
         let url = format!("{}{}", self.endpoint(), DECIDE_PATH);
-        // checked_post_json_with_headers maps any non-2xx (incl. 401) into
+        // checked_post_json_declaring maps any non-2xx (incl. 401) into
         // ApiError, so a demo-cred 401 surfaces as ApiError { status: 401, .. }.
         // A deny verdict is HTTP 200 with verdict="deny" in the body, returned
         // as Ok. /decide reads the PEP capability declaration.
-        let headers: Vec<(&str, &str)> = self.pep_handshake_header().into_iter().collect();
-        let resp = self
-            .checked_post_json_with_headers(&url, &request, &headers)
-            .await?;
+        let resp = self.checked_post_json_declaring(&url, &request).await?;
         let body = resp.text().await?;
         let parsed: DecideResponse = serde_json::from_str(&body)?;
         Ok(parsed)
@@ -252,10 +249,7 @@ impl AxonFlowClient {
         // The MCP check-input route reads the PEP capability declaration: the
         // engine round-trip is made by this enforcement point, so it presents
         // the same declaration the decide call did.
-        let headers: Vec<(&str, &str)> = self.pep_handshake_header().into_iter().collect();
-        let result: MCPCheckInputResponse = match self
-            .checked_post_json_with_headers(&url, &req, &headers)
-            .await
+        let result: MCPCheckInputResponse = match self.checked_post_json_declaring(&url, &req).await
         {
             Ok(resp) => {
                 let body = resp.text().await?;

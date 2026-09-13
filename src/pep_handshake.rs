@@ -10,12 +10,16 @@
 //!  "capabilities":[{"type":"field_redact","version":1}]}
 //! ```
 //!
-//! On an Enterprise deployment, an allow verdict carrying a mandatory
-//! obligation the declared set cannot discharge becomes a deny, so the
-//! enforcement point is never handed an instruction it would drop. A Community
-//! deployment records the declaration and does not deny on it. A capability in
-//! a family the deployment's edition does not issue is dropped from the
-//! declaration, counted and logged; the request proceeds.
+//! Which edition refuses what: from platform v11.0.0, on every edition,
+//! `decide` refuses with `unsupported_obligation` a mandatory obligation the
+//! enforcement point cannot discharge, judged against the declared
+//! capabilities. An organization's redact override is the shipped case, so
+//! under one a Community caller that declares `field_mask` but not
+//! `field_redact` is refused too. On an Enterprise deployment, in addition, any
+//! allow carrying a mandatory obligation outside the declared set becomes a
+//! deny, so the enforcement point is never handed an instruction it would drop.
+//! A capability in a family the deployment's edition does not issue is dropped
+//! from the declaration, counted and logged; the request proceeds.
 //!
 //! # Where it is sent
 //!
@@ -27,7 +31,8 @@
 //! and [`decide_and_fulfill`](crate::AxonFlowClient::decide_and_fulfill) make.
 //! `proxy_llm_call` and `query_connector` (`/api/request`) do not read it, and
 //! the client never sends it there, nor on any other route. It is never a
-//! default header.
+//! default header. The platform also reads it on the gateway pre-check
+//! (`/api/policy/pre-check`) and on MCP `tools/call`; this SDK calls neither.
 //!
 //! # Absent is not empty
 //!
@@ -37,8 +42,8 @@
 //! `decide` under an organization's redact override refuses a caller that does
 //! not declare redaction, so a client that sends none is refused there. An
 //! empty capability list is a declaration that the enforcement point
-//! discharges nothing, which on Enterprise turns every allow that carries a
-//! mandatory obligation into a deny.
+//! discharges nothing, so every mandatory obligation is one it cannot
+//! discharge.
 //!
 //! # The rules are the platform's
 //!
@@ -73,7 +78,11 @@ const MAX_IDENTIFIER_BYTES: usize = 128;
 /// is the platform's canonical order. The type must be one of
 /// [`AuthZenObligationType::KNOWN_WIRE_VALUES`] and the version must be
 /// positive; [`PEPHandshake::new`] refuses anything else.
+///
+/// Build one with [`PEPCapability::new`]. The struct is non-exhaustive so a
+/// member can be added without breaking a caller's struct literal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub struct PEPCapability {
     /// The obligation type, for example `"field_redact"`.
     pub r#type: String,
@@ -445,6 +454,10 @@ mod tests {
     /// The platform's construction of the 64-capability vector: every declared
     /// type in canonical order at version 1, then 2, and so on, stopping at the
     /// count cap.
+    ///
+    /// Built from this build's vocabulary on purpose, as Python's test builds
+    /// it: when the vocabulary gains a type this fails, and that is exactly
+    /// when the golden vector must be regenerated from the platform.
     #[test]
     fn sixty_four_capabilities_are_built_the_way_the_platform_built_them() {
         let mut kinds = AuthZenObligationType::KNOWN_WIRE_VALUES.to_vec();
