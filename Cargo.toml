@@ -99,3 +99,11 @@ path = "examples/explain_decision/main.rs"
 [[example]]
 name = "list_decisions"
 path = "examples/list_decisions/main.rs"
+
+[[example]]
+name = "pep_handshake"
+path = "examples/pep_handshake/main.rs"
+
+[[example]]
+name = "typed_policies"
+path = "examples/typed_policies/main.rs"

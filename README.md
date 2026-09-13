@@ -135,6 +135,16 @@ Then use `cargo run --example <name>` to execute an example:
     ```bash
     cargo run --example authzen
     ```
+*   **The PEP capability handshake** (platform v10.4.0+). Run it before `typed_policies`:
+    ```bash
+    cargo run --example pep_handshake
+    ```
+*   **Typed policy authoring** (platform v11.0.0+). It publishes and activates only with `AXONFLOW_TYPED_POLICY_PUBLISH=1`, and exits non-zero when a publication it asked for is refused:
+    ```bash
+    AXONFLOW_TYPED_POLICY_PUBLISH=1 cargo run --example typed_policies
+    ```
+
+Run `pep_handshake` before `typed_policies`. After a document with an organization-scope constraint is activated, a decide that does not supply the attribute the constraint conditions on is denied fail-closed with reasons ["unknown_constraint"]; supply the attribute or run this example on a fresh stack. From v11.0.0 the deny's first reason is that code, followed by one naming each constraint it could not evaluate and the attribute it needed (getaxonflow/axonflow-enterprise#4247). Both examples print what the platform answered, a decision's `reasons` included. This SDK's `decide` names no organization in its request body, so a Community deployment answers these two with or without credentials.
 
 ## AuthZEN-native authorization (ADR-065)
 
@@ -218,6 +228,37 @@ let decision = client.decide(DecideRequest::new("tool", "look up the weather")).
 - **One process, two enforcement points.** `client.with_pep_handshake(other)` derives a client that presents a different declaration and shares the transport and cache; use it for a call that should present its own. `as_user` keeps the declaration, and `with_pep_handshake` keeps the user token.
 - **Refused before it is sent.** `PEPHandshake::new` applies the platform's rules (a lower-case `pep_id` and an `audience` of at most 128 bytes each, at most 64 known capabilities at positive versions with no repeats, at most 4096 bytes encoded) and returns a `PEPHandshakeError` whose `pointer` names the member at fault, instead of a `400` on the first governed call.
 - **Which edition refuses what.** From v11.0.0, on every edition, the engine refuses with `unsupported_obligation` a mandatory obligation the caller's declaration cannot discharge, and a caller that presents no declaration can discharge none (an organization's redact override is the shipped case), so on Community too, a caller that declares `field_mask` but not `field_redact` is refused under a redact override. What only Enterprise adds happens at the handler, for an enforcement point that presented a declaration: an allow carrying a mandatory obligation outside the declared set becomes a deny, a refusal names the capability the declaration lacks, and on the MCP check-input round-trip that `fulfill_request` and `decide_and_fulfill` make, a redaction the declaration cannot discharge is refused rather than handed back masked. A Community deployment drops a declared capability in a family its edition does not issue, counts it, and lets the request proceed.
+
+## v11.0.0 platform
+
+Against a v11.0.0 platform this SDK reaches the new decision plane. Against an older platform the calls that existed before work as before, and each v11 field reads `None`. What each part needs:
+
+- **The PEP capability handshake: v10.4.0+.** A platform reads the declaration from v10.4.0. From v11.0.0, `decide` under an organization's redact override refuses a caller that does not declare redaction (see [PEP capability handshake](#pep-capability-handshake)).
+- **Decision provenance: v11.0.0+.** `DecideResponse`, `MCPCheckOutputResponse`, `ClientResponse` and `ConnectorResponse` carry `engine`, `subject_type`, `policy_bundle` and `legacy_validators`, and a `DecideResponse` adds `policy_identities`, `policy_packs` and `document_version`. A v11.0.0 platform fills them; `legacy_validators` only where a checksum validator acted.
+- **Typed policy authoring: v11.0.0+.** The routes exist from v11.0.0 (see [Typed policy authoring](#typed-policy-authoring-v1100)). An older platform does not serve them, so each call is refused rather than answered, and `active()` does not read that as nothing active.
+- **Route deprecation stamps and the legacy policy write freeze: v11.0.0+, with nothing to handle here.** This SDK never reached the routes removed in v11.1: it calls none of the legacy policy routes (static, system or dynamic policies, their overrides, impact reports, conflicts or simulation), so neither a deprecation stamp nor a frozen write reaches a call it makes.
+
+Runnable programs, in this order: [`examples/pep_handshake`](examples/pep_handshake/main.rs), then [`examples/typed_policies`](examples/typed_policies/main.rs).
+
+## Typed policy authoring (v11.0.0+)
+
+A v11 platform authors policy as a typed document: validated, published as a signed artifact pinned by its digest, and promoted to active. `client.typed_policies()` reaches the six routes the agent proxies under `/api/v1/typed-policies`:
+
+```rust
+let typed = client.typed_policies();
+let edition = typed.edition().await?;                                // what this deployment may author
+let validation = typed.validate(&document, Some(&fixtures)).await?; // every finding
+let published = typed.publish(&document, Some(&fixtures)).await?;   // signed, pinned by its digest
+typed.activate(&published.digest, Some("quarterly review")).await?; // promote to active
+let active = typed.active().await?;                                 // the signed bytes in force, or None
+let system = typed.system().await?;                                 // the platform's own controls
+```
+
+- **Activation promotes.** A digest whose version does not advance past the active one is refused. Rolling back to an earlier document, and withdrawing the active one, are operations of the customer portal behind its session; the agent does not proxy them, so the SDK has no method for either.
+- **The organization and the author are the ones your credentials resolve to.** The agent stamps both, and the platform signs the caller as author whatever the document names.
+- **System controls are changed in the document, not per policy.** A v11.0.0 platform retires per-policy overrides: `POST` and `DELETE /api/v1/{static,system}-policies/{id}/override` answer `409 LEGACY_POLICY_WRITE_FROZEN` (agent-api's `PerPolicyOverrideRetired` response), and a system control is enabled, disabled or re-actioned in the organization's typed document, in its `system_controls` section. This SDK never called those routes.
+- **Refusals are typed.** Every refusal except a `401` is `AxonFlowError::TypedPolicyRefusal`, with the HTTP `status`, the platform's `reason` (such as `publication_refused`, `activation_refused` or `tier_limit`), any `findings`, the `policy` a tier refusal names, and `retry_after`. `is_retryable()` follows the platform's `Retry-After`, not the status alone. On an edition with separation of duties, publishing refuses with the finding code `APPROVER_IS_AUTHOR`: the route names no approver, and such a deployment approves in the customer portal.
+- **`active()` is `None` only for the platform's `nothing_active`.** Any other `404` is a refusal with status `404`. The platform currently also answers `nothing_active` when its document store cannot be read (getaxonflow/axonflow-enterprise#4255).
 
 ## Reading decisions: who is asking decides what comes back
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The first Rust SDK release carrying these entries sends the PEP capability
+handshake, which a platform reads from v10.4.0, and reaches
+/api/v1/typed-policies, which needs a v11.0.0 platform; against an older
+platform it works unchanged. Upgrade the SDK before the platform: from
+v11.0.0, Decide under an organization's redact override refuses a caller that
+does not declare redaction, and only a release that sends the handshake can
+declare it.
+
 ### Added
 
 - **What decided a governed request, as a v11.0.0 platform reports it.**
@@ -60,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SDKs still answer nothing active. `max_documents` counts customer-authored policies, not
   documents. These routes need a v11.0.0 platform, and do not read the PEP
   capability declaration, which is not sent on them.
+- **Two runnable v11 examples, in the order to run them.**
+  `examples/pep_handshake` declares an enforcement point's capabilities,
+  presents a second declaration for one call, prints each decision's verdict
+  and reasons, and shows a declaration the platform would refuse failing in
+  the client. `examples/typed_policies` reads the edition, validates a
+  document, publishes and activates it only with
+  `AXONFLOW_TYPED_POLICY_PUBLISH=1`, and exits non-zero when a publication it
+  asked for is refused. Run the handshake example first: after a document
+  with an organization-scope constraint is activated, a decide that does not
+  supply the attribute the constraint conditions on is denied fail-closed
+  with reasons `["unknown_constraint"]`. From v11.0.0 the deny's first reason
+  is that code, followed by one naming each constraint it could not evaluate
+  (getaxonflow/axonflow-enterprise#4247).
 
 ### Changed
 
