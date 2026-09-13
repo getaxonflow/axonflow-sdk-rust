@@ -484,6 +484,22 @@ async fn the_config_builder_declares_it() {
     );
 }
 
+/// There is no default declaration. A client built the way a caller builds one,
+/// from `AxonFlowConfig::new` or `Default`, never naming the field, sends no
+/// header. The other no-declaration test names `pep_handshake: None` in its
+/// struct literal, so it cannot see what `Default` supplies; this one can.
+#[tokio::test]
+async fn the_default_config_declares_nothing() {
+    assert!(AxonFlowConfig::default().pep_handshake.is_none());
+    let server = allowing_platform().await;
+    AxonFlowClient::new(AxonFlowConfig::new(server.uri()))
+        .expect("the client builds")
+        .decide(DecideRequest::new("tool", "hi"))
+        .await
+        .expect("allow");
+    assert_eq!(handshakes_at(&server, DECIDE_PATH).await, vec![None]);
+}
+
 // ---------------------------------------------------------------------------
 // Structure: where the header CAN be attached
 // ---------------------------------------------------------------------------
