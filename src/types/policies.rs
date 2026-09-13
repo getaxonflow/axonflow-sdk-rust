@@ -352,6 +352,62 @@ mod tests {
         );
     }
 
+    /// Every variant but `Unknown`, beside a match with no `_` arm: a variant
+    /// added to the enum does not compile here until it is listed, and each
+    /// listed variant is then held to `KNOWN_WIRE_VALUES` and `From<String>`.
+    #[test]
+    fn every_variant_is_in_the_known_set_and_parses_back() {
+        use PolicyCategory::*;
+        let all = [
+            SecuritySqli,
+            SecurityAdmin,
+            PiiGlobal,
+            PiiUs,
+            PiiEu,
+            PiiIndia,
+            PiiSingapore,
+            PiiIndonesia,
+            CodeSecrets,
+            CodeUnsafe,
+            CodeCompliance,
+            SensitiveData,
+            MediaSafety,
+            MediaBiometric,
+            MediaDocument,
+            MediaPii,
+            DynamicRisk,
+            DynamicCompliance,
+            DynamicSecurity,
+            DynamicCost,
+            DynamicAccess,
+            SecurityDangerous,
+            ComplianceEuaiact,
+            DangerousQueries,
+            PiiDetection,
+            SqlInjection,
+        ];
+        for c in &all {
+            match c {
+                SecuritySqli | SecurityAdmin | PiiGlobal | PiiUs | PiiEu | PiiIndia
+                | PiiSingapore | PiiIndonesia | CodeSecrets | CodeUnsafe | CodeCompliance
+                | SensitiveData | MediaSafety | MediaBiometric | MediaDocument | MediaPii
+                | DynamicRisk | DynamicCompliance | DynamicSecurity | DynamicCost
+                | DynamicAccess | SecurityDangerous | ComplianceEuaiact | DangerousQueries
+                | PiiDetection | SqlInjection => {}
+                Unknown(_) => unreachable!("the list names known variants only"),
+            }
+        }
+        assert_eq!(all.len(), PolicyCategory::KNOWN_WIRE_VALUES.len());
+        for c in all {
+            let wire = c.as_str().to_string();
+            assert!(
+                PolicyCategory::KNOWN_WIRE_VALUES.contains(&wire.as_str()),
+                "{wire}"
+            );
+            assert_eq!(PolicyCategory::from(wire.clone()), c, "{wire}");
+        }
+    }
+
     /// The fixture names where it came from, so a stale one is visible: the
     /// source path, a full platform commit, the source's sha256, and a sorted,
     /// de-duplicated category list (getaxonflow/axonflow-enterprise#4224).

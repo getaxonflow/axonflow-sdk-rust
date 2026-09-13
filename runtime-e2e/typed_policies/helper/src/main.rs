@@ -73,6 +73,7 @@ async fn main() -> ExitCode {
     let agent =
         std::env::var("AXONFLOW_AGENT_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     println!("agent: {agent}");
+    let client_id = std::env::var("AXONFLOW_CLIENT_ID").unwrap_or_else(|_| "runtime-e2e".into());
     let mut run = Run {
         failures: Vec::new(),
     };
@@ -222,7 +223,9 @@ async fn main() -> ExitCode {
                 "the document in force carries the policies that were published",
             );
             // The author is the caller the agent stamped, never the name the
-            // request carried: a present, non-empty principal of its own.
+            // request carried. On Community that caller is the API client: a
+            // `Client` principal in the api-credential realm, named by the client
+            // id this proof presents.
             let author = &metadata["author"];
             let requested = &document["metadata"]["author"];
             let local = author["local"].as_str().unwrap_or("");
@@ -230,10 +233,20 @@ async fn main() -> ExitCode {
                 "  author: type={} local={local:?} (the request named {})",
                 author["type"], requested["local"]
             );
+            let community = edition
+                .constructs
+                .as_ref()
+                .and_then(|c| c.edition.as_deref())
+                == Some("community");
+            let stamped = if community {
+                author["type"] == "Client"
+                    && author["qualifier"] == "axonflow-api-credential"
+                    && local == client_id
+            } else {
+                author["type"].as_str().is_some_and(|t| !t.is_empty()) && !local.is_empty()
+            };
             run.check(
-                author["type"].as_str().is_some_and(|t| !t.is_empty())
-                    && !local.is_empty()
-                    && Some(local) != requested["local"].as_str(),
+                stamped && Some(local) != requested["local"].as_str(),
                 "the platform signed the caller as author, not the name in the request",
             );
         }

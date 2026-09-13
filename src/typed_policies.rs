@@ -47,6 +47,10 @@
 
 use crate::client::AxonFlowClient;
 use crate::error::AxonFlowError;
+// The platform marshals a nil Go slice or map as JSON `null`, not `[]` or `{}`
+// (a clean validation answers `"findings": null`), so every collection it
+// declares without `omitempty` reads `null` as empty through this helper.
+use crate::types::agent::null_to_default;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -54,11 +58,6 @@ use std::fmt;
 
 /// The route prefix the six operations share.
 pub const TYPED_POLICIES_PATH: &str = "/api/v1/typed-policies";
-
-// The platform marshals a nil Go slice or map as JSON `null`, not `[]` or `{}`:
-// a clean validation answers `"findings": null`. Every collection it declares
-// without `omitempty` therefore reads `null` as empty, through the crate's one
-// helper for it.
 
 /// What this edition may spend (the spec's `EditionConstructReport`).
 ///
@@ -71,9 +70,9 @@ pub struct EditionConstructReport {
     /// `community`, `evaluation` or `enterprise`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edition: Option<String>,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub obligation_families: Vec<String>,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub attribute_namespaces: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_scope: Option<bool>,
@@ -82,7 +81,7 @@ pub struct EditionConstructReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_established: Option<bool>,
     /// Constructs withheld for want of an edition ruling, not by one.
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub reserved: Vec<String>,
 }
 
@@ -122,7 +121,9 @@ pub struct TypedAuthoringDocumentRequest {
 }
 
 impl TypedAuthoringDocumentRequest {
-    fn new(document: &Value, fixtures: Option<&[Value]>) -> Self {
+    /// The request for `document` and its `fixtures`, as
+    /// [`TypedPolicies::validate`] and [`TypedPolicies::publish`] send it.
+    pub fn new(document: &Value, fixtures: Option<&[Value]>) -> Self {
         Self {
             document: document.clone(),
             fixtures: fixtures.map(<[Value]>::to_vec),
@@ -174,7 +175,7 @@ pub struct TypedAuthoringEdition {
 pub struct TypedPolicyValidation {
     #[serde(default)]
     pub success: bool,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub findings: Vec<AuthoringFinding>,
 }
 
@@ -187,7 +188,7 @@ pub struct TypedPolicyPublication {
     pub digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub findings: Vec<AuthoringFinding>,
     /// The platform's report of the shipped template's controls this document
     /// omits, as the platform sent it; absent when it omits none.
@@ -204,7 +205,7 @@ pub struct TypedPolicyPublication {
 pub struct TypedPolicyActivation {
     #[serde(default)]
     pub success: bool,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub activation: Map<String, Value>,
     /// The platform's report of the shipped template's controls the activated
     /// document omits, as the platform sent it; absent when it omits none.
@@ -244,7 +245,7 @@ pub struct TypedPolicySystemControl {
     pub mandatory: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub obligations: Vec<Value>,
 }
 
@@ -262,11 +263,11 @@ pub struct TypedPolicySystemCorpus {
     pub digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority: Option<String>,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub controls: Vec<TypedPolicySystemControl>,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub assurance_counts: BTreeMap<String, i64>,
-    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub document: Map<String, Value>,
 }
 
@@ -327,8 +328,9 @@ fn refusal(status: u16, retry_after: Option<u64>, body: &[u8], route: &str) -> A
             .map(str::to_string)
     };
     if status == 401 {
-        // The same message every other route's authentication error carries:
-        // the body as it came when it names no `error`.
+        // The platform's `error` when it names one, else the body itself,
+        // trimmed, so a plain-text 401 from the agent keeps its words, else
+        // the status and the route.
         let raw = String::from_utf8_lossy(body).trim().to_string();
         let message = text("error")
             .or_else(|| Some(raw).filter(|s| !s.is_empty()))
@@ -509,8 +511,12 @@ impl TypedPolicies<'_> {
     /// [`TypedPolicyRefusal`](AxonFlowError::TypedPolicyRefusal) with status
     /// `404`: a platform without the typed routes (before v11.0.0), or a base
     /// URL that is not an AxonFlow agent, is reported as such rather than as
-    /// "nothing active". The Go and Python SDKs still read any `404` as nothing
-    /// active.
+    /// "nothing active". The Go, Python, TypeScript and Java SDKs still read
+    /// any `404` as nothing active.
+    ///
+    /// `None` is only as reliable as that reason: the platform currently also
+    /// answers `nothing_active` when its document store cannot be read
+    /// (getaxonflow/axonflow-enterprise#4255).
     pub async fn active(&self) -> Result<Option<ActiveTypedPolicy>, AxonFlowError> {
         let route = "/active";
         let response = self.client.raw_get_as(&self.url(route), None).await?;

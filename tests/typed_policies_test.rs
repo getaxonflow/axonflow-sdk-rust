@@ -364,17 +364,23 @@ async fn nothing_active_is_none() {
 /// refusal naming its status.
 #[tokio::test]
 async fn a_404_that_is_not_nothing_active_is_a_typed_refusal() {
-    for template in [
-        ResponseTemplate::new(404).set_body_string("404 page not found"),
-        ResponseTemplate::new(404).set_body_json(json!({
-            "success": false, "reason": "no_such_endpoint", "error": "no such typed-policies endpoint"
-        })),
+    for (template, reason) in [
+        (
+            ResponseTemplate::new(404).set_body_string("404 page not found"),
+            None,
+        ),
+        (
+            ResponseTemplate::new(404).set_body_json(json!({
+                "success": false, "reason": "no_such_endpoint", "error": "no such typed-policies endpoint"
+            })),
+            Some("no_such_endpoint"),
+        ),
     ] {
         let server = MockServer::start().await;
         answer(&server, "GET", "/active", template).await;
         let r = refused(client(&server).typed_policies().active().await.unwrap_err());
         assert_eq!(r.status, 404);
-        assert_ne!(r.reason.as_deref(), Some("nothing_active"));
+        assert_eq!(r.reason.as_deref(), reason);
     }
 }
 
@@ -783,12 +789,12 @@ async fn a_401_is_the_clients_authentication_error() {
     }
 }
 
-/// A 401 that names no `error` keeps its body, as every other route's
-/// authentication error does.
+/// A 401 that names no `error` keeps its body, trimmed, so a plain-text answer
+/// from the agent keeps its words.
 #[tokio::test]
 async fn a_401_without_an_error_member_keeps_its_body() {
     match refusal_on_publish(
-        ResponseTemplate::new(401).set_body_string("unauthorized: unknown client"),
+        ResponseTemplate::new(401).set_body_string("  unauthorized: unknown client\n"),
     )
     .await
     {
@@ -817,6 +823,15 @@ async fn a_refusal_without_a_json_body_still_names_its_status() {
     assert_eq!(r.status, 502);
     assert_eq!(r.reason, None);
     assert_eq!(r.message, "HTTP 502 from /publish");
+}
+
+/// A bare 500 is retryable: the 5xx rule starts at 500 itself.
+#[tokio::test]
+async fn a_500_is_a_retryable_refusal() {
+    let err =
+        refusal_on_publish(ResponseTemplate::new(500).set_body_string("internal error")).await;
+    assert!(err.is_retryable());
+    assert_eq!(refused(err).status, 500);
 }
 
 /// A member of an unexpected type leaves the others read.

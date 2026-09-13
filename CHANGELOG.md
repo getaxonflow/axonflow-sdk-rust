@@ -56,10 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   except `catalog_not_configured`; a typed refusal never triggers fail-open.
   `active()` is `None` only for the platform's `nothing_active`; any other
   `404`, from a platform before v11.0.0 or a base URL that is not an agent,
-  is a refusal with status `404`, where the Go and Python SDKs still answer
-  nothing active. `max_documents` counts customer-authored policies, not
+  is a refusal with status `404`, where the Go, Python, TypeScript and Java
+  SDKs still answer nothing active. `max_documents` counts customer-authored policies, not
   documents. These routes need a v11.0.0 platform, and do not read the PEP
   capability declaration, which is not sent on them.
+
+### Changed
+
 - **`AxonFlowError` is `#[non_exhaustive]`.** It gains `TypedPolicyRefusal`,
   so a downstream exhaustive `match` changes once either way; the one `_` arm
   it adds now also covers every variant a later release adds.

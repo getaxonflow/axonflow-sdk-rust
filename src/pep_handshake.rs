@@ -11,14 +11,17 @@
 //! ```
 //!
 //! Which edition refuses what: from platform v11.0.0, on every edition, the
-//! engine refuses with `unsupported_obligation` a caller whose declaration
-//! cannot discharge a mandatory obligation. An organization's redact override
-//! is the shipped case, so under one a Community caller that declares
-//! `field_mask` but not `field_redact` is refused too. What only Enterprise
-//! adds happens at the handler, for an enforcement point that presented a
-//! declaration: an allow carrying a mandatory obligation outside the declared
-//! set becomes a deny, so the enforcement point is never handed an instruction
-//! it would drop, and a refusal names the capability the declaration lacks.
+//! engine refuses with `unsupported_obligation` a mandatory obligation the
+//! caller's declaration cannot discharge, and a caller that presents no
+//! declaration can discharge none. An organization's redact override is the
+//! shipped case, so under one a Community caller that declares `field_mask`
+//! but not `field_redact` is refused too. What only Enterprise adds happens at
+//! the handler, for an enforcement point that presented a declaration: an
+//! allow carrying a mandatory obligation outside the declared set becomes a
+//! deny, so the enforcement point is never handed an instruction it would
+//! drop; a refusal names the capability the declaration lacks; and on the MCP
+//! check-input round-trip, a redaction the declaration cannot discharge is
+//! refused rather than handed back masked.
 //! A capability in a family the deployment's edition does not issue is dropped
 //! from the declaration, counted and logged; the request proceeds.
 //!
