@@ -1,0 +1,148 @@
+{
+  "document": {
+    "api_version": "authoring.axonflow.com/v1",
+    "metadata": {
+      "document_id": "org-baseline",
+      "title": "Organization baseline",
+      "author": {
+        "kind": "principal",
+        "type": "User",
+        "qualifier": "axonflow-trusted-header",
+        "local": "someone-else"
+      }
+    },
+    "policy": {
+      "root": "organization",
+      "version": 1,
+      "attributes": [
+        {
+          "path": "principal.id",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "path": "action.id",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "path": "action.tags",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "path": "args.request_type",
+          "type": "string",
+          "optional": false
+        }
+      ],
+      "policies": [
+        {
+          "id": "grant.refund",
+          "authority": "permission",
+          "root": "organization",
+          "scope": {
+            "organization": false,
+            "principals": [
+              {
+                "kind": "principal",
+                "type": "User",
+                "qualifier": "axonflow-trusted-header",
+                "local": "alice"
+              }
+            ]
+          },
+          "actions": {
+            "actions": [
+              {
+                "kind": "action",
+                "type": "Action",
+                "local": "tool.call"
+              }
+            ]
+          },
+          "where": {
+            "kind": "compare",
+            "path": "args.request_type",
+            "op": "eq",
+            "literal": "refund"
+          }
+        },
+        {
+          "id": "ceiling.refund",
+          "authority": "constraint",
+          "root": "organization",
+          "scope": {
+            "organization": true
+          },
+          "actions": {
+            "actions": [
+              {
+                "kind": "action",
+                "type": "Action",
+                "local": "tool.call"
+              }
+            ]
+          },
+          "where": {
+            "kind": "compare",
+            "path": "args.request_type",
+            "op": "eq",
+            "literal": "wire_transfer"
+          }
+        }
+      ]
+    }
+  },
+  "fixtures": [
+    {
+      "name": "a refund under the ceiling",
+      "attributes": {
+        "action.id": {
+          "state": "known",
+          "value": "Action::tool.call",
+          "source": "platform",
+          "source_version": 1,
+          "observed_at": "2023-11-14T22:13:20Z"
+        },
+        "action.tags": {
+          "state": "known",
+          "value": [
+            "irreversible",
+            "spend"
+          ],
+          "source": "platform",
+          "source_version": 1,
+          "observed_at": "2023-11-14T22:13:20Z"
+        },
+        "args.request_type": {
+          "state": "known",
+          "value": "refund",
+          "source": "caller",
+          "source_version": 1,
+          "observed_at": "2023-11-14T22:13:20Z"
+        },
+        "principal.groups": {
+          "state": "known",
+          "value": [
+            "Group::axonflow-trusted-header:finance"
+          ],
+          "source": "directory",
+          "source_version": 1,
+          "observed_at": "2023-11-14T22:13:20Z"
+        },
+        "principal.id": {
+          "state": "known",
+          "value": "User::axonflow-trusted-header:alice",
+          "source": "directory",
+          "source_version": 1,
+          "observed_at": "2023-11-14T22:13:20Z"
+        }
+      },
+      "expect": {
+        "ceiling.refund": "NO_MATCH",
+        "grant.refund": "MATCH"
+      }
+    }
+  ]
+}

@@ -38,6 +38,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses a caller that does not declare redaction (`field_redact` at version
   1). `AxonFlowConfig` gains the public field `pep_handshake`, so a struct
   literal that names every field without `..Default::default()` must add it.
+- **Typed policy authoring, the v11 successor to the legacy policy routes.**
+  `client.typed_policies()` reaches the six `/api/v1/typed-policies` routes:
+  `edition()`, `validate(document, fixtures)`, `publish(document, fixtures)`,
+  `activate(digest, reason)`, `active()` (`None` when nothing is active) and
+  `system()`. The document is an opaque `serde_json::Value`, as the spec
+  declares it; the three spec-named types (`EditionConstructReport`,
+  `AuthoringFinding`, `TypedAuthoringDocumentRequest`) are modelled and
+  checked against the pinned spec, and a JSON `null` collection reads as
+  empty. Every refusal except a `401` is the new
+  `AxonFlowError::TypedPolicyRefusal` (status, reason, code, message,
+  findings, retry_after); a `401` stays `ApiError`. These routes need a
+  v11.0.0 platform, and do not read the PEP capability declaration, which is
+  not sent on them. `AxonFlowError` gains a variant, so a downstream
+  exhaustive `match` on it needs the new arm.
+
+### Fixed
+
+- **`PolicyCategory` no longer fails on a category the SDK does not know**
+  (#98). The platform ships its categories as data, and a v11 platform uses
+  categories this enum did not name (`security-dangerous`), so deserializing
+  the platform's JSON into it failed. An unknown category now reads as
+  `PolicyCategory::Unknown(String)` and re-serializes byte-identical, the
+  pattern `AuthZenObligationType` already uses (`as_str`, `is_known`,
+  `KNOWN_WIRE_VALUES`). The enum gains `SecurityDangerous`,
+  `ComplianceEuaiact`, `DangerousQueries`, `PiiDetection` and `SqlInjection`,
+  the categories the platform's shipped posture uses that it lacked, and the
+  known set is pinned to that posture (getaxonflow/axonflow-enterprise#4224).
+  It is now `#[non_exhaustive]`: a downstream exhaustive `match` needs a `_`
+  arm, a one-time change so that a new category is not a breaking one again.
 
 ## [0.10.0] - 2026-09-06: telemetry parity, and a cold-path ping that a short-lived process actually delivers
 

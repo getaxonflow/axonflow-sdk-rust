@@ -46,6 +46,15 @@ pub enum AxonFlowError {
     /// here rather than leaking PII.
     #[error("Obligation not engine-fulfillable: {0}")]
     ObligationNotFulfillable(String),
+    /// A typed policy authoring request the platform refused: every non-2xx
+    /// answer from `/api/v1/typed-policies` except a `401`, which stays
+    /// [`AxonFlowError::ApiError`]. See
+    /// [`TypedPolicyRefusal`](crate::typed_policies::TypedPolicyRefusal).
+    ///
+    /// Boxed for the same reason `ReadScope` is: it would otherwise dominate
+    /// the enum's size (clippy::result_large_err).
+    #[error("{0}")]
+    TypedPolicyRefusal(Box<crate::typed_policies::TypedPolicyRefusal>),
 }
 
 impl AxonFlowError {
@@ -55,6 +64,7 @@ impl AxonFlowError {
             AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
             AxonFlowError::RateLimited { .. } => true,
             AxonFlowError::Unavailable(_) => true,
+            AxonFlowError::TypedPolicyRefusal(r) => r.status >= 500 || r.status == 429,
             _ => false,
         }
     }

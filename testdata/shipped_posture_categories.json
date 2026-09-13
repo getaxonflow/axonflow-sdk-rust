@@ -1,0 +1,22 @@
+{
+  "_comment": "The categories the platform's shipped posture uses, vendored so the SDK's known PolicyCategory set can be pinned to them (enterprise #4224). Regenerate from the source at a newer platform commit; tests/test_static_policy_category.py fails when a category here is missing from PolicyCategory.",
+  "source": "platform/decision/pdp/shipped_posture.json",
+  "platform_commit": "857455033b2ea4686835eac037fca41f948e4515",
+  "source_sha256": "c04ba983c65d5a94bba258fc6b646f355f1a92e6c8c50a922a744e1543743682",
+  "categories": [
+    "compliance-euaiact",
+    "dangerous_queries",
+    "pii-eu",
+    "pii-global",
+    "pii-india",
+    "pii-indonesia",
+    "pii-singapore",
+    "pii-us",
+    "pii_detection",
+    "security-admin",
+    "security-dangerous",
+    "security-sqli",
+    "sensitive-data",
+    "sql_injection"
+  ]
+}

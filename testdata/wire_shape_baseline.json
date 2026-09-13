@@ -352,6 +352,7 @@
   },
   "registered_types": [
     "AuditLogEntry",
+    "AuthoringFinding",
     "CancelPlanResponse",
     "ChatCompletionRequest",
     "ChatCompletionResponse",
@@ -362,6 +363,7 @@
     "DecisionCallerIdentity",
     "DecisionExplanation",
     "DecisionTarget",
+    "EditionConstructReport",
     "ExplainPolicy",
     "ExplainRule",
     "HITLApprovalRequest",
@@ -377,6 +379,7 @@
     "PolicyInfo",
     "PolicyMatchInfo",
     "RateLimitEnvelope",
-    "TokenUsage"
+    "TokenUsage",
+    "TypedAuthoringDocumentRequest"
   ]
 }

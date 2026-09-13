@@ -9,6 +9,7 @@ pub mod interceptors;
 pub mod pep;
 pub mod pep_handshake;
 pub mod read_identity;
+pub mod typed_policies;
 pub mod types;
 
 use percent_encoding::{AsciiSet, CONTROLS};
@@ -69,6 +70,12 @@ pub use pep_handshake::{
     MAX_PEP_HANDSHAKE_CAPABILITIES, PEP_HANDSHAKE_HEADER, PEP_HANDSHAKE_PROFILE_V1,
 };
 pub use read_identity::{ReadScope, ReadScopeRefusal, HEADER_READ_SCOPE, HEADER_USER_TOKEN};
+pub use typed_policies::{
+    ActiveTypedPolicy, AuthoringFinding, EditionConstructReport, TypedAuthoringDocumentRequest,
+    TypedAuthoringEdition, TypedPolicies, TypedPolicyActivation, TypedPolicyPublication,
+    TypedPolicyRefusal, TypedPolicySystemControl, TypedPolicySystemCorpus, TypedPolicyValidation,
+    TYPED_POLICIES_PATH,
+};
 pub use types::agent::transfer_basis;
 pub use types::agent::{
     AuditLogEntry, AuditRequest, AuditResult, BudgetInfo, CancelPlanResponse, ClientRequest,
