@@ -11,8 +11,9 @@
 #                         and the no-override control. Needs NO detection
 #                         override recorded for the organization.
 #   test.sh refusal       after a pii=redact detection override is recorded
-#                         for the organization: the undeclared caller is
-#                         refused, the declaring caller is allowed and fulfils.
+#                         for the organization: the undeclared caller and a
+#                         field_mask@1-only caller are refused, the
+#                         field_redact@1 caller is allowed and fulfils.
 #   test.sh probe-present exit 0 once the override is in effect for the agent.
 #   test.sh probe-absent  exit 0 once no override is in effect for the agent.
 #
@@ -38,6 +39,10 @@ export AXONFLOW_CLIENT_ID="${AXONFLOW_CLIENT_ID:-runtime-e2e}"
 export AXONFLOW_CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 # The proof must not fire a telemetry ping at the production checkpoint.
 export AXONFLOW_TELEMETRY=off
+
+# The helper's own unit tests (the reason-code predicate) run first: CI does
+# not build this crate, so this is where they run.
+cargo test --quiet --manifest-path "${HERE}/helper/Cargo.toml" || { echo "FAIL: the helper's unit tests failed"; exit 1; }
 
 # Built first and outside the timeout, so a cold build does not count against
 # the run; the run is bounded so a hung agent call cannot block a runner.

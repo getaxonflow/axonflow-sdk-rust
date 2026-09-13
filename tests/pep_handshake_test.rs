@@ -578,6 +578,11 @@ impl<'ast> syn::visit::Visit<'ast> for Census {
         self.strings.push(s.value());
     }
 
+    fn visit_lit_byte_str(&mut self, s: &'ast syn::LitByteStr) {
+        self.strings
+            .push(String::from_utf8_lossy(&s.value()).into_owned());
+    }
+
     fn visit_macro(&mut self, m: &'ast syn::Macro) {
         syn::visit::visit_macro(self, m);
         let text = m.tokens.to_string();
@@ -630,6 +635,24 @@ fn literal(fragment: &'static str) -> impl Fn(&Census) -> usize {
     }
 }
 
+/// Letters and digits only, lower-cased, so `"X-Axonflow-PEP-Handshake"`,
+/// `b"x_axonflow_pep_handshake"` and a `concat!` of its halves all contain
+/// `fragment` when it is written the same way.
+fn normalised(fragment: &'static str) -> impl Fn(&Census) -> usize {
+    move |c| {
+        c.strings
+            .iter()
+            .filter(|s| {
+                s.chars()
+                    .filter(|ch| ch.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase()
+                    .contains(fragment)
+            })
+            .count()
+    }
+}
+
 fn pins(expected: &[(&str, usize)]) -> Vec<(String, usize)> {
     expected.iter().map(|(f, n)| (f.to_string(), *n)).collect()
 }
@@ -657,6 +680,29 @@ fn the_census_sees_shipped_code_and_skips_test_modules() {
         census_of(literal("check-output")),
         pins(&[("src/pep.rs", 1)])
     );
+}
+
+/// The census skips files named `*_tests.rs`, which today is only the
+/// heartbeat's `#[cfg(test)] #[path]` module. A shipped file with that suffix
+/// would be invisible to every pin, so the skipped set is pinned too.
+#[test]
+fn the_only_file_the_census_skips_is_the_heartbeat_test_module() {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("readable src dir") {
+            let p = entry.expect("dir entry").path();
+            if p.is_dir() {
+                walk(&p, root, out);
+            } else if p.to_string_lossy().ends_with("_tests.rs") {
+                let rel = p.strip_prefix(root).expect("under the crate");
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut skipped = Vec::new();
+    walk(&root.join("src"), root, &mut skipped);
+    skipped.sort();
+    assert_eq!(skipped, vec!["src/heartbeat_tests.rs".to_string()]);
 }
 
 /// The declaration is attached through ONE accessor, `pep_handshake_header`,
@@ -688,8 +734,10 @@ fn only_the_accessor_names_the_header() {
             ("src/pep_handshake.rs", 3)
         ])
     );
+    // Any spelling of the header name in a string, a byte string or a macro
+    // body, including one split across a concat!, is the constant's alone.
     assert_eq!(
-        census_of(literal("pep-handshake")),
+        census_of(normalised("xaxonflowpephandshake")),
         pins(&[("src/pep_handshake.rs", 1)])
     );
 }

@@ -30,7 +30,7 @@ This phase needs a `pii=redact` detection-action override recorded for the organ
 | the same call from a client declaring `field_redact@1` | `allow`, with the redaction obligation attached (counted `accepted@decision`) |
 | `decide_and_fulfill()` from that client | `allow`, and the content forwarded is the engine's redaction, without the address (counted `accepted@decision` and `accepted@mcp`) |
 
-The platform writes a reason as `"<code>: <detail>"`, so the proof matches a reason by its code. This is the cost of not declaring from platform v11.0.0: under an organization's redact override, a caller that does not declare redaction is refused. The platform reads the declaration from v10.4.0.
+The platform writes a refusal's reason either as the bare code (the engine's own refusal, which is what this phase gets) or as `"<code>: <detail>"` (a subject, validator or wire refusal), so the proof matches a reason by its code. This is the cost of not declaring from platform v11.0.0: under an organization's redact override, a caller that does not declare redaction is refused. The platform reads the declaration from v10.4.0.
 
 `test.sh probe-present` and `test.sh probe-absent` exit 0 once the override is, or is no longer, in effect for the agent. The agent caches an organization's overrides for about a minute, so a runner polls these rather than sleeping.
 
@@ -48,4 +48,4 @@ Boot a Community agent from the platform's main, then:
 AXONFLOW_AGENT_URL=http://localhost:8080 ./runtime-e2e/pep_handshake_planes/test.sh
 ```
 
-The planes phase needs a Community edition: its per-call step expects `over_advertised`, and an Enterprise agent keeps the approval-family capability and counts `accepted`. `AXONFLOW_CLIENT_ID` defaults to `runtime-e2e`, and `AXONFLOW_CLIENT_SECRET` to empty, which community mode accepts. The planes phase writes nothing to the stack beyond the audit rows every governed request leaves. To run the refusal phase, record the organization's `pii=redact` override, wait for `probe-present`, run `refusal`, then remove the override and wait for `probe-absent`.
+The planes phase needs a Community edition: its per-call step expects `over_advertised`, and an Enterprise agent keeps the approval-family capability and counts `accepted`. `test.sh` first runs the helper's own unit tests (the reason-code predicate), since CI does not build this crate. `AXONFLOW_CLIENT_ID` defaults to `runtime-e2e`, and `AXONFLOW_CLIENT_SECRET` to empty, which community mode accepts. The planes phase writes nothing to the stack beyond the audit rows every governed request leaves. To run the refusal phase, record the organization's `pii=redact` override, wait for `probe-present`, run `refusal`, then remove the override and wait for `probe-absent`.

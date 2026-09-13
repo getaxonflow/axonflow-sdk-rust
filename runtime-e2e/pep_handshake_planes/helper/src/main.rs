@@ -12,9 +12,10 @@
 //!                  no-override control. Needs a stack with NO detection
 //!                  override for the organization.
 //!   refusal        under an organization's pii=redact override: the
-//!                  undeclared caller is refused unsupported_obligation, the
-//!                  field_redact@1 caller is allowed with the obligation and
-//!                  fulfils it through the engine.
+//!                  undeclared caller and a field_mask@1-only caller are
+//!                  refused unsupported_obligation, the field_redact@1 caller
+//!                  is allowed with the obligation and fulfils it through the
+//!                  engine.
 //!   probe-present  exit 0 once the override is in effect for this agent.
 //!   probe-absent   exit 0 once no override is in effect for this agent.
 
@@ -343,8 +344,10 @@ fn masking_only() -> PEPHandshake {
 }
 
 /// Whether one of the platform's reasons is `code`. The platform writes a
-/// reason as `"<code>: <detail>"` (decision_enforcing_seam.go) and may write
-/// the bare code, so a reason is matched by its code, never compared whole.
+/// refusal's reason either as the bare code (the engine's own refusal, which is
+/// what the refusal phase gets) or as `"<code>: <detail>"` (a subject, validator
+/// or wire refusal; decision_enforcing_seam.go), so a reason is matched by its
+/// code, never compared whole.
 fn has_reason(d: &DecideResponse, code: &str) -> bool {
     d.reasons.as_deref().unwrap_or_default().iter().any(|r| {
         r == code
