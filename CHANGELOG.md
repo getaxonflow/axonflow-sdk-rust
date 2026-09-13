@@ -21,6 +21,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatched through `/api/request`, and its `ConnectorResponse` was built
   from that answer by hand, dropping every field not copied; it now carries
   the four provenance fields of the `/api/request` response.
+- **The PEP capability handshake.** A client declares what its enforcement
+  point can discharge with `PEPHandshake::new(pep_id, audience, capabilities)`
+  on `AxonFlowConfig::pep_handshake` (or
+  `AxonFlowConfig::with_pep_handshake`), and the SDK sends it as
+  `X-Axonflow-PEP-Handshake` on the calls whose route reads it: `decide`,
+  `evaluate`, `evaluate_all`, and the MCP check-input round-trip of
+  `fulfill_request` and `decide_and_fulfill`. It is never sent on
+  `/api/request` or on any other route, and there is no default: a client
+  without a declaration sends none. `AxonFlowClient::with_pep_handshake`
+  derives a client that presents a different declaration, sharing the
+  transport and cache, which is the per-call form. A declaration the platform
+  would refuse fails at construction with `PEPHandshakeError`, whose `pointer`
+  names the member, and is encoded once. The platform reads the declaration
+  from v10.4.0; from v11.0.0, `decide` under an organization's redact override
+  refuses a caller that does not declare redaction (`field_redact` at version
+  1). `AxonFlowConfig` gains the public field `pep_handshake`, so a struct
+  literal that names every field without `..Default::default()` must add it.
 
 ## [0.10.0] - 2026-09-06: telemetry parity, and a cold-path ping that a short-lived process actually delivers
 

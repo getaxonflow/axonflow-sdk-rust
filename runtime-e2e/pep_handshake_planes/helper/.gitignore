@@ -1,0 +1,4 @@
+# A standalone crate: its build output and lockfile are local to whoever runs
+# the proof, and the SDK's own Cargo.lock governs what ships.
+target/
+Cargo.lock

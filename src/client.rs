@@ -1,6 +1,7 @@
 use crate::config::{AxonFlowConfig, Mode};
 use crate::error::AxonFlowError;
 use crate::heartbeat::maybe_send_heartbeat_on_request;
+use crate::pep_handshake::{PEPHandshake, PEP_HANDSHAKE_HEADER};
 use crate::types::agent::{ClientRequest, ClientResponse};
 use crate::PATH_SEGMENT;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
@@ -547,6 +548,64 @@ impl AxonFlowClient {
         }
     }
 
+    /// A client identical to this one but presenting `handshake` as its PEP
+    /// capability declaration.
+    ///
+    /// This is how one call presents a different declaration from the client's:
+    /// derive a client for it. One process can be two enforcement points (a
+    /// request path and a response path discharging different obligations), and
+    /// each presents its own. Everything else is this client's, including its
+    /// read-path identity, so `client.as_user(t).with_pep_handshake(h)` presents
+    /// both. The declaration reaches every call whose route reads it, including
+    /// the MCP check-input round-trip that
+    /// [`fulfill_request`](Self::fulfill_request) and
+    /// [`decide_and_fulfill`](Self::decide_and_fulfill) make on the derived
+    /// client.
+    ///
+    /// ```no_run
+    /// # use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, DecideRequest, PEPCapability, PEPHandshake};
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = AxonFlowClient::new(AxonFlowConfig::new("http://localhost:8080"))?;
+    /// let response_path = PEPHandshake::new(
+    ///     "response-path",
+    ///     "https://pep.example.test",
+    ///     [PEPCapability::new("field_mask", 1)],
+    /// )?;
+    /// let decision = client
+    ///     .with_pep_handshake(response_path)
+    ///     .decide(DecideRequest::new("tool", "look up the weather"))
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// Like [`as_user`](Self::as_user), the returned client SHARES this one's
+    /// transport and cache, so deriving one per call is cheap; this client is
+    /// not modified.
+    pub fn with_pep_handshake(&self, handshake: PEPHandshake) -> Self {
+        let mut config = self.config.clone();
+        config.pep_handshake = Some(handshake);
+        Self {
+            config,
+            http_client: self.http_client.clone(),
+            map_http_client: self.map_http_client.clone(),
+            cache: self.cache.clone(),
+        }
+    }
+
+    /// The PEP capability declaration's header, for the call sites whose route
+    /// reads it (`decide`, the AuthZEN evaluation, the MCP check-input
+    /// fulfillment) and no other. `None` when this client declares nothing.
+    ///
+    /// It is attached per request rather than as a default header, because the
+    /// platform's other routes do not read it and a declaration sent where it
+    /// is not read is a claim nobody checks.
+    pub(crate) fn pep_handshake_header(&self) -> Option<(&'static str, &str)> {
+        self.config
+            .pep_handshake
+            .as_ref()
+            .map(|h| (PEP_HANDSHAKE_HEADER, h.header_value()))
+    }
+
     /// Redirects may not leave the configured origin.
     ///
     /// This is the second half of "the identity is sent to the configured
@@ -702,9 +761,24 @@ impl AxonFlowClient {
         url: &str,
         body: &T,
     ) -> Result<reqwest::Response, AxonFlowError> {
-        let resp = self
-            .dispatch(self.http_client.post(url).json(body), None)
-            .await?;
+        self.checked_post_json_with_headers(url, body, &[]).await
+    }
+
+    /// [`checked_post_json`](Self::checked_post_json) with per-request
+    /// headers, for the call sites whose route reads one this client does not
+    /// send everywhere (the PEP capability declaration). The same transport,
+    /// the same dispatch funnel, the same status translation.
+    pub(crate) async fn checked_post_json_with_headers<T: serde::Serialize + ?Sized>(
+        &self,
+        url: &str,
+        body: &T,
+        headers: &[(&str, &str)],
+    ) -> Result<reqwest::Response, AxonFlowError> {
+        let mut request = self.http_client.post(url).json(body);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let resp = self.dispatch(request, None).await?;
         Self::check_status(resp).await
     }
 

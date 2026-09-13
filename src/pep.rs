@@ -118,6 +118,14 @@ impl AxonFlowClient {
     /// 401 → [`AxonFlowError::ApiError`] with `status: 401`. A deny verdict is
     /// returned in the body with HTTP 200, not as an error.
     ///
+    /// The client's PEP capability declaration
+    /// ([`AxonFlowConfig::pep_handshake`](crate::AxonFlowConfig::pep_handshake))
+    /// is sent with this call; a client without one sends none. The platform
+    /// reads it from v10.4.0. From v11.0.0, under an organization's redact
+    /// override, a caller that does not declare redaction (`field_redact` at
+    /// version 1) is refused with `unsupported_obligation`. See
+    /// [`crate::pep_handshake`].
+    ///
     /// # Errors
     ///
     /// - [`AxonFlowError::ApiError`] with `status: 401` for bad / demo creds.
@@ -138,10 +146,14 @@ impl AxonFlowClient {
     /// ```
     pub async fn decide(&self, request: DecideRequest) -> Result<DecideResponse, AxonFlowError> {
         let url = format!("{}{}", self.endpoint(), DECIDE_PATH);
-        // checked_post_json maps any non-2xx (incl. 401) into ApiError, so a
-        // demo-cred 401 surfaces as ApiError { status: 401, .. }. A deny verdict
-        // is HTTP 200 with verdict="deny" in the body, returned as Ok.
-        let resp = self.checked_post_json(&url, &request).await?;
+        // checked_post_json_with_headers maps any non-2xx (incl. 401) into
+        // ApiError, so a demo-cred 401 surfaces as ApiError { status: 401, .. }.
+        // A deny verdict is HTTP 200 with verdict="deny" in the body, returned
+        // as Ok. /decide reads the PEP capability declaration.
+        let headers: Vec<(&str, &str)> = self.pep_handshake_header().into_iter().collect();
+        let resp = self
+            .checked_post_json_with_headers(&url, &request, &headers)
+            .await?;
         let body = resp.text().await?;
         let parsed: DecideResponse = serde_json::from_str(&body)?;
         Ok(parsed)
@@ -155,6 +167,11 @@ impl AxonFlowClient {
     ///
     /// There is NO code path in which this method redacts locally — fulfillment
     /// is always the engine round-trip (ADR-056 / #2563).
+    ///
+    /// The engine round-trip carries this client's PEP capability declaration,
+    /// as `decide` does, so on a client derived with
+    /// [`with_pep_handshake`](Self::with_pep_handshake) it carries the derived
+    /// one.
     ///
     /// Returns `(content, did_redact)`. `content` is the engine-redacted
     /// statement (or the original when no obligation mutates the request).
@@ -232,7 +249,14 @@ impl AxonFlowClient {
             content_type: Some(CONTENT_TYPE_TEXT.to_string()),
         };
         let url = format!("{}{}", self.endpoint(), REQUEST_REDACTION_PATH);
-        let result: MCPCheckInputResponse = match self.checked_post_json(&url, &req).await {
+        // The MCP check-input route reads the PEP capability declaration: the
+        // engine round-trip is made by this enforcement point, so it presents
+        // the same declaration the decide call did.
+        let headers: Vec<(&str, &str)> = self.pep_handshake_header().into_iter().collect();
+        let result: MCPCheckInputResponse = match self
+            .checked_post_json_with_headers(&url, &req, &headers)
+            .await
+        {
             Ok(resp) => {
                 let body = resp.text().await?;
                 serde_json::from_str(&body).map_err(|e| {

@@ -194,6 +194,31 @@ This surface does **not** apply the client's `RetryConfig`: that executor is wir
 
 **The types are generated, never hand-written.** `src/authzen/types_gen.rs` is emitted from `testdata/authzen-surface.json`, the platform's canonical contract artifact, by `tools/gen-authzen-types`. Regenerate with `cargo run -p axonflow-authzen-codegen`; `cargo test` fails if the committed file is not what the artifact generates.
 
+## PEP capability handshake
+
+An enforcement point declares the obligation types and schema versions it can discharge, and the SDK sends that declaration as the `X-Axonflow-PEP-Handshake` header on the calls whose route reads it. The platform reads it from **v10.4.0**. From **v11.0.0**, `decide` under an organization's redact override refuses a caller that does not declare redaction (`field_redact` at version 1) with `unsupported_obligation`, so a client that declares nothing is refused there.
+
+```rust
+use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig, DecideRequest, PEPCapability, PEPHandshake};
+
+let declared = PEPHandshake::new(
+    "gateway",                    // this enforcement point, within your credential
+    "https://pep.example.test",   // the audience a decision proof is bound to
+    [PEPCapability::new("field_redact", 1)],
+)?; // a declaration the platform would refuse fails here, naming the member
+
+let client = AxonFlowClient::new(
+    AxonFlowConfig::new("http://localhost:8080").with_pep_handshake(declared),
+)?;
+let decision = client.decide(DecideRequest::new("tool", "look up the weather")).await?;
+```
+
+- **Where it is sent.** `decide`, `evaluate`, `evaluate_all`, and the MCP check-input round-trip that `fulfill_request` and `decide_and_fulfill` make. Never on `proxy_llm_call` or `query_connector` (`/api/request`), which do not read it, and never on any other route. It is not a default header.
+- **Absent is not empty.** A client without a declaration sends no header; there is no default, because only you know what your enforcement point can discharge. An empty capability list is a declaration that it discharges nothing, which on Enterprise turns every allow carrying a mandatory obligation into a deny.
+- **One process, two enforcement points.** `client.with_pep_handshake(other)` derives a client that presents a different declaration and shares the transport and cache; use it for a call that should present its own. `as_user` keeps the declaration, and `with_pep_handshake` keeps the user token.
+- **Refused before it is sent.** `PEPHandshake::new` applies the platform's rules (a lower-case `pep_id` and an `audience` of at most 128 bytes each, at most 64 known capabilities at positive versions with no repeats, at most 4096 bytes encoded) and returns a `PEPHandshakeError` whose `pointer` names the member at fault, instead of a `400` on the first governed call.
+- **Community and Enterprise.** A Community deployment records the declaration and does not deny on it, and drops a capability in a family its edition does not issue. On Enterprise, an allow carrying a mandatory obligation the declared set cannot discharge becomes a deny.
+
 ## Reading decisions: who is asking decides what comes back
 
 `explain_decision` and `list_decisions` are scoped to the **per-user identity**

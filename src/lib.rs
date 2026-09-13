@@ -7,6 +7,7 @@ pub mod heartbeat;
 pub mod hitl;
 pub mod interceptors;
 pub mod pep;
+pub mod pep_handshake;
 pub mod read_identity;
 pub mod types;
 
@@ -62,6 +63,10 @@ pub use pep::{
     has_request_redaction, CONTENT_TYPE_TEXT, DECIDE_PATH, GATEWAY_CONNECTOR_TAG,
     OBLIGATION_REDACT_PII, PHASE_REQUEST, PHASE_RESPONSE, REQUEST_REDACTION_PATH,
     RESPONSE_REDACTION_PATH, VERDICT_ALLOW, VERDICT_DENY, VERDICT_NEEDS_APPROVAL,
+};
+pub use pep_handshake::{
+    PEPCapability, PEPHandshake, PEPHandshakeError, MAX_PEP_HANDSHAKE_BYTES,
+    MAX_PEP_HANDSHAKE_CAPABILITIES, PEP_HANDSHAKE_HEADER, PEP_HANDSHAKE_PROFILE_V1,
 };
 pub use read_identity::{ReadScope, ReadScopeRefusal, HEADER_READ_SCOPE, HEADER_USER_TOKEN};
 pub use types::agent::transfer_basis;

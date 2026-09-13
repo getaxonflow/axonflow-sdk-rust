@@ -1,0 +1,321 @@
+{
+  "_comment": "PEP capability handshake golden vectors. Each header was produced by the platform's own encoder and accepted by its decoder; pep_handshake.rs asserts the SDK produces the same bytes. Regenerate at a newer platform commit with the scratch program described in the PR that added this file.",
+  "source": "platform/decision/contract/handshake.go: PEPHandshake.Encode, each value round-tripped through DecodePEPHandshake",
+  "platform_commit": "857455033b2ea4686835eac037fca41f948e4515",
+  "python_parity": {
+    "file": "axonflow-sdk-python tests/test_pep_handshake.py",
+    "commit": "53742327031838a6042050e7ab056ab0e46af71c",
+    "blob": "2a187041234284c75b671ddb6804aa7174aee49f",
+    "claim": "empty, unsorted and minimal are byte-identical to its GOLDEN; sixty-four matches its SIXTY_FOUR_LEN and SIXTY_FOUR_SHA256",
+    "sixty_four_sha256": "cdb2b368348bceaed99ca92647afeecd70981604157b60ad66067953a371edbf"
+  },
+  "vectors": [
+    {
+      "id": "empty",
+      "pep_id": "sdk-python",
+      "audience": "https://pep.example.test",
+      "capabilities": [],
+      "header": "eyJwcm9maWxlX3ZlcnNpb24iOjEsInBlcF9pZCI6InNkay1weXRob24iLCJhdWRpZW5jZSI6Imh0dHBzOi8vcGVwLmV4YW1wbGUudGVzdCIsImNhcGFiaWxpdGllcyI6W119"
+    },
+    {
+      "id": "unsorted",
+      "pep_id": "gateway.request-1",
+      "audience": "urn:example:aud",
+      "capabilities": [
+        {
+          "type": "field_redact",
+          "version": 2
+        },
+        {
+          "type": "approval_challenge",
+          "version": 1
+        },
+        {
+          "type": "field_redact",
+          "version": 1
+        },
+        {
+          "type": "notification",
+          "version": 3
+        }
+      ],
+      "header": "eyJwcm9maWxlX3ZlcnNpb24iOjEsInBlcF9pZCI6ImdhdGV3YXkucmVxdWVzdC0xIiwiYXVkaWVuY2UiOiJ1cm46ZXhhbXBsZTphdWQiLCJjYXBhYmlsaXRpZXMiOlt7InR5cGUiOiJhcHByb3ZhbF9jaGFsbGVuZ2UiLCJ2ZXJzaW9uIjoxfSx7InR5cGUiOiJmaWVsZF9yZWRhY3QiLCJ2ZXJzaW9uIjoxfSx7InR5cGUiOiJmaWVsZF9yZWRhY3QiLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJub3RpZmljYXRpb24iLCJ2ZXJzaW9uIjozfV19"
+    },
+    {
+      "id": "minimal",
+      "pep_id": "a",
+      "audience": "A",
+      "capabilities": [
+        {
+          "type": "step_up_authentication",
+          "version": 1
+        }
+      ],
+      "header": "eyJwcm9maWxlX3ZlcnNpb24iOjEsInBlcF9pZCI6ImEiLCJhdWRpZW5jZSI6IkEiLCJjYXBhYmlsaXRpZXMiOlt7InR5cGUiOiJzdGVwX3VwX2F1dGhlbnRpY2F0aW9uIiwidmVyc2lvbiI6MX1dfQ"
+    },
+    {
+      "id": "sixty-four",
+      "pep_id": "p",
+      "audience": "a",
+      "capabilities": [
+        {
+          "type": "approval_challenge",
+          "version": 1
+        },
+        {
+          "type": "field_annotate",
+          "version": 1
+        },
+        {
+          "type": "field_hash",
+          "version": 1
+        },
+        {
+          "type": "field_mask",
+          "version": 1
+        },
+        {
+          "type": "field_redact",
+          "version": 1
+        },
+        {
+          "type": "field_remove",
+          "version": 1
+        },
+        {
+          "type": "field_tokenize",
+          "version": 1
+        },
+        {
+          "type": "immutable_audit",
+          "version": 1
+        },
+        {
+          "type": "notification",
+          "version": 1
+        },
+        {
+          "type": "quota_reservation",
+          "version": 1
+        },
+        {
+          "type": "response_filter",
+          "version": 1
+        },
+        {
+          "type": "route_restriction",
+          "version": 1
+        },
+        {
+          "type": "schema_transform",
+          "version": 1
+        },
+        {
+          "type": "step_up_authentication",
+          "version": 1
+        },
+        {
+          "type": "approval_challenge",
+          "version": 2
+        },
+        {
+          "type": "field_annotate",
+          "version": 2
+        },
+        {
+          "type": "field_hash",
+          "version": 2
+        },
+        {
+          "type": "field_mask",
+          "version": 2
+        },
+        {
+          "type": "field_redact",
+          "version": 2
+        },
+        {
+          "type": "field_remove",
+          "version": 2
+        },
+        {
+          "type": "field_tokenize",
+          "version": 2
+        },
+        {
+          "type": "immutable_audit",
+          "version": 2
+        },
+        {
+          "type": "notification",
+          "version": 2
+        },
+        {
+          "type": "quota_reservation",
+          "version": 2
+        },
+        {
+          "type": "response_filter",
+          "version": 2
+        },
+        {
+          "type": "route_restriction",
+          "version": 2
+        },
+        {
+          "type": "schema_transform",
+          "version": 2
+        },
+        {
+          "type": "step_up_authentication",
+          "version": 2
+        },
+        {
+          "type": "approval_challenge",
+          "version": 3
+        },
+        {
+          "type": "field_annotate",
+          "version": 3
+        },
+        {
+          "type": "field_hash",
+          "version": 3
+        },
+        {
+          "type": "field_mask",
+          "version": 3
+        },
+        {
+          "type": "field_redact",
+          "version": 3
+        },
+        {
+          "type": "field_remove",
+          "version": 3
+        },
+        {
+          "type": "field_tokenize",
+          "version": 3
+        },
+        {
+          "type": "immutable_audit",
+          "version": 3
+        },
+        {
+          "type": "notification",
+          "version": 3
+        },
+        {
+          "type": "quota_reservation",
+          "version": 3
+        },
+        {
+          "type": "response_filter",
+          "version": 3
+        },
+        {
+          "type": "route_restriction",
+          "version": 3
+        },
+        {
+          "type": "schema_transform",
+          "version": 3
+        },
+        {
+          "type": "step_up_authentication",
+          "version": 3
+        },
+        {
+          "type": "approval_challenge",
+          "version": 4
+        },
+        {
+          "type": "field_annotate",
+          "version": 4
+        },
+        {
+          "type": "field_hash",
+          "version": 4
+        },
+        {
+          "type": "field_mask",
+          "version": 4
+        },
+        {
+          "type": "field_redact",
+          "version": 4
+        },
+        {
+          "type": "field_remove",
+          "version": 4
+        },
+        {
+          "type": "field_tokenize",
+          "version": 4
+        },
+        {
+          "type": "immutable_audit",
+          "version": 4
+        },
+        {
+          "type": "notification",
+          "version": 4
+        },
+        {
+          "type": "quota_reservation",
+          "version": 4
+        },
+        {
+          "type": "response_filter",
+          "version": 4
+        },
+        {
+          "type": "route_restriction",
+          "version": 4
+        },
+        {
+          "type": "schema_transform",
+          "version": 4
+        },
+        {
+          "type": "step_up_authentication",
+          "version": 4
+        },
+        {
+          "type": "approval_challenge",
+          "version": 5
+        },
+        {
+          "type": "field_annotate",
+          "version": 5
+        },
+        {
+          "type": "field_hash",
+          "version": 5
+        },
+        {
+          "type": "field_mask",
+          "version": 5
+        },
+        {
+          "type": "field_redact",
+          "version": 5
+        },
+        {
+          "type": "field_remove",
+          "version": 5
+        },
+        {
+          "type": "field_tokenize",
+          "version": 5
+        },
+        {
+          "type": "immutable_audit",
+          "version": 5
+        }
+      ],
+      "header": "eyJwcm9maWxlX3ZlcnNpb24iOjEsInBlcF9pZCI6InAiLCJhdWRpZW5jZSI6ImEiLCJjYXBhYmlsaXRpZXMiOlt7InR5cGUiOiJhcHByb3ZhbF9jaGFsbGVuZ2UiLCJ2ZXJzaW9uIjoxfSx7InR5cGUiOiJhcHByb3ZhbF9jaGFsbGVuZ2UiLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJhcHByb3ZhbF9jaGFsbGVuZ2UiLCJ2ZXJzaW9uIjozfSx7InR5cGUiOiJhcHByb3ZhbF9jaGFsbGVuZ2UiLCJ2ZXJzaW9uIjo0fSx7InR5cGUiOiJhcHByb3ZhbF9jaGFsbGVuZ2UiLCJ2ZXJzaW9uIjo1fSx7InR5cGUiOiJmaWVsZF9hbm5vdGF0ZSIsInZlcnNpb24iOjF9LHsidHlwZSI6ImZpZWxkX2Fubm90YXRlIiwidmVyc2lvbiI6Mn0seyJ0eXBlIjoiZmllbGRfYW5ub3RhdGUiLCJ2ZXJzaW9uIjozfSx7InR5cGUiOiJmaWVsZF9hbm5vdGF0ZSIsInZlcnNpb24iOjR9LHsidHlwZSI6ImZpZWxkX2Fubm90YXRlIiwidmVyc2lvbiI6NX0seyJ0eXBlIjoiZmllbGRfaGFzaCIsInZlcnNpb24iOjF9LHsidHlwZSI6ImZpZWxkX2hhc2giLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJmaWVsZF9oYXNoIiwidmVyc2lvbiI6M30seyJ0eXBlIjoiZmllbGRfaGFzaCIsInZlcnNpb24iOjR9LHsidHlwZSI6ImZpZWxkX2hhc2giLCJ2ZXJzaW9uIjo1fSx7InR5cGUiOiJmaWVsZF9tYXNrIiwidmVyc2lvbiI6MX0seyJ0eXBlIjoiZmllbGRfbWFzayIsInZlcnNpb24iOjJ9LHsidHlwZSI6ImZpZWxkX21hc2siLCJ2ZXJzaW9uIjozfSx7InR5cGUiOiJmaWVsZF9tYXNrIiwidmVyc2lvbiI6NH0seyJ0eXBlIjoiZmllbGRfbWFzayIsInZlcnNpb24iOjV9LHsidHlwZSI6ImZpZWxkX3JlZGFjdCIsInZlcnNpb24iOjF9LHsidHlwZSI6ImZpZWxkX3JlZGFjdCIsInZlcnNpb24iOjJ9LHsidHlwZSI6ImZpZWxkX3JlZGFjdCIsInZlcnNpb24iOjN9LHsidHlwZSI6ImZpZWxkX3JlZGFjdCIsInZlcnNpb24iOjR9LHsidHlwZSI6ImZpZWxkX3JlZGFjdCIsInZlcnNpb24iOjV9LHsidHlwZSI6ImZpZWxkX3JlbW92ZSIsInZlcnNpb24iOjF9LHsidHlwZSI6ImZpZWxkX3JlbW92ZSIsInZlcnNpb24iOjJ9LHsidHlwZSI6ImZpZWxkX3JlbW92ZSIsInZlcnNpb24iOjN9LHsidHlwZSI6ImZpZWxkX3JlbW92ZSIsInZlcnNpb24iOjR9LHsidHlwZSI6ImZpZWxkX3JlbW92ZSIsInZlcnNpb24iOjV9LHsidHlwZSI6ImZpZWxkX3Rva2VuaXplIiwidmVyc2lvbiI6MX0seyJ0eXBlIjoiZmllbGRfdG9rZW5pemUiLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJmaWVsZF90b2tlbml6ZSIsInZlcnNpb24iOjN9LHsidHlwZSI6ImZpZWxkX3Rva2VuaXplIiwidmVyc2lvbiI6NH0seyJ0eXBlIjoiZmllbGRfdG9rZW5pemUiLCJ2ZXJzaW9uIjo1fSx7InR5cGUiOiJpbW11dGFibGVfYXVkaXQiLCJ2ZXJzaW9uIjoxfSx7InR5cGUiOiJpbW11dGFibGVfYXVkaXQiLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJpbW11dGFibGVfYXVkaXQiLCJ2ZXJzaW9uIjozfSx7InR5cGUiOiJpbW11dGFibGVfYXVkaXQiLCJ2ZXJzaW9uIjo0fSx7InR5cGUiOiJpbW11dGFibGVfYXVkaXQiLCJ2ZXJzaW9uIjo1fSx7InR5cGUiOiJub3RpZmljYXRpb24iLCJ2ZXJzaW9uIjoxfSx7InR5cGUiOiJub3RpZmljYXRpb24iLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJub3RpZmljYXRpb24iLCJ2ZXJzaW9uIjozfSx7InR5cGUiOiJub3RpZmljYXRpb24iLCJ2ZXJzaW9uIjo0fSx7InR5cGUiOiJxdW90YV9yZXNlcnZhdGlvbiIsInZlcnNpb24iOjF9LHsidHlwZSI6InF1b3RhX3Jlc2VydmF0aW9uIiwidmVyc2lvbiI6Mn0seyJ0eXBlIjoicXVvdGFfcmVzZXJ2YXRpb24iLCJ2ZXJzaW9uIjozfSx7InR5cGUiOiJxdW90YV9yZXNlcnZhdGlvbiIsInZlcnNpb24iOjR9LHsidHlwZSI6InJlc3BvbnNlX2ZpbHRlciIsInZlcnNpb24iOjF9LHsidHlwZSI6InJlc3BvbnNlX2ZpbHRlciIsInZlcnNpb24iOjJ9LHsidHlwZSI6InJlc3BvbnNlX2ZpbHRlciIsInZlcnNpb24iOjN9LHsidHlwZSI6InJlc3BvbnNlX2ZpbHRlciIsInZlcnNpb24iOjR9LHsidHlwZSI6InJvdXRlX3Jlc3RyaWN0aW9uIiwidmVyc2lvbiI6MX0seyJ0eXBlIjoicm91dGVfcmVzdHJpY3Rpb24iLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJyb3V0ZV9yZXN0cmljdGlvbiIsInZlcnNpb24iOjN9LHsidHlwZSI6InJvdXRlX3Jlc3RyaWN0aW9uIiwidmVyc2lvbiI6NH0seyJ0eXBlIjoic2NoZW1hX3RyYW5zZm9ybSIsInZlcnNpb24iOjF9LHsidHlwZSI6InNjaGVtYV90cmFuc2Zvcm0iLCJ2ZXJzaW9uIjoyfSx7InR5cGUiOiJzY2hlbWFfdHJhbnNmb3JtIiwidmVyc2lvbiI6M30seyJ0eXBlIjoic2NoZW1hX3RyYW5zZm9ybSIsInZlcnNpb24iOjR9LHsidHlwZSI6InN0ZXBfdXBfYXV0aGVudGljYXRpb24iLCJ2ZXJzaW9uIjoxfSx7InR5cGUiOiJzdGVwX3VwX2F1dGhlbnRpY2F0aW9uIiwidmVyc2lvbiI6Mn0seyJ0eXBlIjoic3RlcF91cF9hdXRoZW50aWNhdGlvbiIsInZlcnNpb24iOjN9LHsidHlwZSI6InN0ZXBfdXBfYXV0aGVudGljYXRpb24iLCJ2ZXJzaW9uIjo0fV19"
+    }
+  ]
+}

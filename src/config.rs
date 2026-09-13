@@ -1,3 +1,4 @@
+use crate::pep_handshake::PEPHandshake;
 use std::fmt;
 use std::time::Duration;
 
@@ -88,6 +89,18 @@ pub struct AxonFlowConfig {
     pub retry: RetryConfig,
     pub cache: CacheConfig,
     pub insecure_skip_tls_verify: bool,
+    /// The PEP capability declaration this client presents on the calls whose
+    /// route reads it: `decide`, `evaluate`, `evaluate_all`, and the MCP
+    /// check-input round-trip of `fulfill_request` / `decide_and_fulfill`.
+    /// Never on `/api/request` or any other route.
+    ///
+    /// `None` sends no header, and there is no default: only the caller knows
+    /// what its enforcement point can discharge. From platform v11.0.0, `decide`
+    /// under an organization's redact override refuses a caller that does not
+    /// declare redaction. Present a different declaration on some calls with
+    /// [`AxonFlowClient::with_pep_handshake`](crate::AxonFlowClient::with_pep_handshake).
+    /// See [`crate::pep_handshake`].
+    pub pep_handshake: Option<PEPHandshake>,
 }
 
 impl fmt::Debug for AxonFlowConfig {
@@ -118,6 +131,9 @@ impl fmt::Debug for AxonFlowConfig {
             .field("retry", &self.retry)
             .field("cache", &self.cache)
             .field("insecure_skip_tls_verify", &self.insecure_skip_tls_verify)
+            // A capability declaration names an enforcement point and what it
+            // can discharge; it authorises nothing, so it is shown as is.
+            .field("pep_handshake", &self.pep_handshake)
             .finish()
     }
 }
@@ -137,6 +153,7 @@ impl Default for AxonFlowConfig {
             retry: RetryConfig::default(),
             cache: CacheConfig::default(),
             insecure_skip_tls_verify: false,
+            pep_handshake: None,
         }
     }
 }
@@ -205,6 +222,13 @@ impl AxonFlowConfig {
 
     pub fn with_cache(mut self, cache: CacheConfig) -> Self {
         self.cache = cache;
+        self
+    }
+
+    /// Declares this client's PEP capabilities on the calls whose route reads
+    /// them. See [`AxonFlowConfig::pep_handshake`].
+    pub fn with_pep_handshake(mut self, handshake: PEPHandshake) -> Self {
+        self.pep_handshake = Some(handshake);
         self
     }
 }

@@ -675,9 +675,11 @@ impl AxonFlowClient {
             })?;
 
         let url = format!("{}{}", self.endpoint(), AUTHZEN_PATH);
-        let response = self
-            .raw_post_json_bytes(&url, body, &[(AUTHZEN_PROFILE_HEADER, AUTHZEN_PROFILE_V1)])
-            .await?;
+        // The evaluation route reads the PEP capability declaration, single and
+        // bulk alike.
+        let mut headers = vec![(AUTHZEN_PROFILE_HEADER, AUTHZEN_PROFILE_V1)];
+        headers.extend(self.pep_handshake_header());
+        let response = self.raw_post_json_bytes(&url, body, &headers).await?;
 
         let status = response.status();
         let raw = response
