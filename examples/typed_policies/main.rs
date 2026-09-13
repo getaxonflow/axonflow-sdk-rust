@@ -27,8 +27,10 @@
 //! `AXONFLOW_TYPED_POLICY_BODY` names a JSON file holding
 //! `{"document": ..., "fixtures": [...]}`; the default is this repository's
 //! `testdata/typed_policy_publish_body.json`. `AXONFLOW_CLIENT_ID` and
-//! `AXONFLOW_CLIENT_SECRET` are the credentials the organization and the
-//! author resolve to; a Community deployment accepts any.
+//! `AXONFLOW_CLIENT_SECRET` are the credentials the agent authenticates, and
+//! the author is the client they name. On Community any credentials are
+//! accepted and every call's organization is the deployment's (`ORG_ID`); on
+//! Enterprise it is the one the credentials resolve to.
 //!
 //! Exits non-zero when a step fails, so it doubles as a smoke test.
 
@@ -152,16 +154,38 @@ async fn main() -> ExitCode {
                     "published {} (version {:?})",
                     published.digest, published.version
                 );
+                // Activating a document that omits the organization template's
+                // controls removes those controls for the organization, so the
+                // report is printed before the activation.
+                match (
+                    &published.template_omissions,
+                    &published.template_omissions_unavailable,
+                ) {
+                    (Some(omissions), _) => {
+                        let omitted: Vec<&str> = omissions["omitted"]
+                            .as_array()
+                            .map(|ids| ids.iter().filter_map(Value::as_str).collect())
+                            .unwrap_or_default();
+                        println!(
+                            "template omissions: {} of {} template controls: {}",
+                            omitted.len(),
+                            omissions["of"],
+                            omitted.join(", ")
+                        );
+                    }
+                    (None, Some(why)) => println!("template omissions: unavailable: {why}"),
+                    (None, None) => println!("template omissions: none"),
+                }
                 match typed
                     .activate(&published.digest, Some("examples/typed_policies"))
                     .await
                 {
                     Ok(activation) => {
                         println!("activated");
-                        println!("  activation: {:?}", activation.activation);
-                        if let Some(report) = &activation.template_omissions {
-                            println!("  template omissions: {report}");
-                        }
+                        println!(
+                            "  activation: {}",
+                            Value::Object(activation.activation.clone())
+                        );
                     }
                     Err(err) => {
                         report(&err);

@@ -22,7 +22,7 @@
 //! by one naming each constraint it could not evaluate and the attribute it
 //! needed (getaxonflow/axonflow-enterprise#4247).
 //!
-//! Run it against a local stack from the repository root:
+//! Run it against a local stack:
 //!
 //! ```text
 //! export AXONFLOW_AGENT_URL=http://localhost:8080
