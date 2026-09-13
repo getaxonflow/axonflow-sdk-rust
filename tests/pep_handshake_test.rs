@@ -500,6 +500,31 @@ async fn the_default_config_declares_nothing() {
     assert_eq!(handshakes_at(&server, DECIDE_PATH).await, vec![None]);
 }
 
+/// The declaration's accessors return what was declared, the capabilities in
+/// canonical order and the header value non-empty.
+#[test]
+fn the_accessors_return_what_was_declared() {
+    let declared = PEPHandshake::new(
+        "gw.request-1",
+        "https://pep.example.test",
+        [
+            PEPCapability::new("field_redact", 2),
+            PEPCapability::new("field_mask", 1),
+        ],
+    )
+    .expect("a valid declaration");
+    assert_eq!(declared.pep_id(), "gw.request-1");
+    assert_eq!(declared.audience(), "https://pep.example.test");
+    assert_eq!(
+        declared.capabilities(),
+        &[
+            PEPCapability::new("field_mask", 1),
+            PEPCapability::new("field_redact", 2)
+        ]
+    );
+    assert!(!declared.header_value().is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // Structure: where the header CAN be attached
 // ---------------------------------------------------------------------------
