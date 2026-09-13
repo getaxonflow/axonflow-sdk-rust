@@ -135,16 +135,16 @@ Then use `cargo run --example <name>` to execute an example:
     ```bash
     cargo run --example authzen
     ```
-*   **The PEP capability handshake** (platform v10.4.0+). Run it before `typed_policies`:
+*   **The PEP capability handshake** (platform v10.4.0+):
     ```bash
     cargo run --example pep_handshake
     ```
-*   **Typed policy authoring** (platform v11.0.0+). It publishes and activates only with `AXONFLOW_TYPED_POLICY_PUBLISH=1`, and exits non-zero when a publication it asked for is refused:
+*   **Typed policy authoring** (platform v11.0.0+). It publishes and activates only with `AXONFLOW_TYPED_POLICY_PUBLISH=1`, and exits non-zero when a publication or activation it asked for is refused:
     ```bash
     AXONFLOW_TYPED_POLICY_PUBLISH=1 cargo run --example typed_policies
     ```
 
-Run `pep_handshake` before `typed_policies`. After a document with an organization-scope constraint is activated, a decide that does not supply the attribute the constraint conditions on is denied fail-closed with reasons ["unknown_constraint"]; supply the attribute or run this example on a fresh stack. From v11.0.0 the deny's first reason is that code, followed by one naming each constraint it could not evaluate and the attribute it needed (getaxonflow/axonflow-enterprise#4247). Both examples print what the platform answered, a decision's `reasons` included. This SDK's `decide` names no organization in its request body, so a Community deployment answers these two with or without credentials.
+Run `pep_handshake` before `typed_policies`. After a document with an organization-scope constraint is activated, a decide that does not supply the attribute the constraint conditions on is denied fail-closed with reasons ["unknown_constraint"]; supply the attribute or run this example on a fresh stack. From v11.0.0 the deny's first reason is that code, followed by one naming each constraint it could not evaluate and the attribute it needed (getaxonflow/axonflow-enterprise#4247). Both examples print what the platform answered, a decision's `reasons` included. A Community deployment answers both with or without credentials: this SDK's `decide` names no organization in its request body, and the agent stamps the organization of every typed-policy call from the credentials it authenticated.
 
 ## AuthZEN-native authorization (ADR-065)
 

@@ -74,13 +74,13 @@ declare it.
   and reasons, and shows a declaration the platform would refuse failing in
   the client. `examples/typed_policies` reads the edition, validates a
   document, publishes and activates it only with
-  `AXONFLOW_TYPED_POLICY_PUBLISH=1`, and exits non-zero when a publication it
-  asked for is refused. Run the handshake example first: after a document
+  `AXONFLOW_TYPED_POLICY_PUBLISH=1`, and exits non-zero when a publication or
+  activation it asked for is refused. Run the handshake example first: after a document
   with an organization-scope constraint is activated, a decide that does not
   supply the attribute the constraint conditions on is denied fail-closed
   with reasons `["unknown_constraint"]`. From v11.0.0 the deny's first reason
   is that code, followed by one naming each constraint it could not evaluate
-  (getaxonflow/axonflow-enterprise#4247).
+  and the attribute it needed (getaxonflow/axonflow-enterprise#4247).
 
 ### Changed
 

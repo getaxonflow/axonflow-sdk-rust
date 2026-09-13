@@ -17,7 +17,7 @@
 //! needed (getaxonflow/axonflow-enterprise#4247). The default document below is
 //! such a document.
 //!
-//! Run it against a local stack from the repository root:
+//! Run it against a local stack:
 //!
 //! ```text
 //! export AXONFLOW_AGENT_URL=http://localhost:8080
@@ -25,7 +25,7 @@
 //! ```
 //!
 //! `AXONFLOW_TYPED_POLICY_BODY` names a JSON file holding
-//! `{"document": ..., "fixtures": [...]}`; the default is
+//! `{"document": ..., "fixtures": [...]}`; the default is this repository's
 //! `testdata/typed_policy_publish_body.json`. `AXONFLOW_CLIENT_ID` and
 //! `AXONFLOW_CLIENT_SECRET` are the credentials the organization and the
 //! author resolve to; a Community deployment accepts any.
@@ -63,8 +63,13 @@ fn report(err: &AxonFlowError) {
 async fn main() -> ExitCode {
     let agent_url =
         std::env::var("AXONFLOW_AGENT_URL").unwrap_or_else(|_| "http://localhost:8080".into());
-    let body_path = std::env::var("AXONFLOW_TYPED_POLICY_BODY")
-        .unwrap_or_else(|_| "testdata/typed_policy_publish_body.json".into());
+    let body_path = std::env::var("AXONFLOW_TYPED_POLICY_BODY").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/typed_policy_publish_body.json"
+        )
+        .into()
+    });
     let body: Value = match std::fs::read_to_string(&body_path)
         .map_err(|e| e.to_string())
         .and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()))
@@ -151,7 +156,13 @@ async fn main() -> ExitCode {
                     .activate(&published.digest, Some("examples/typed_policies"))
                     .await
                 {
-                    Ok(_) => println!("activated"),
+                    Ok(activation) => {
+                        println!("activated");
+                        println!("  activation: {:?}", activation.activation);
+                        if let Some(report) = &activation.template_omissions {
+                            println!("  template omissions: {report}");
+                        }
+                    }
                     Err(err) => {
                         report(&err);
                         failures += 1;
