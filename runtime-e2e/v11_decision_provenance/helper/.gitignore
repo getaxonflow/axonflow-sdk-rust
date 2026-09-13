@@ -1,0 +1,5 @@
+# Helper-local build artifacts. Lockfile excluded too — the helper's
+# resolved dep graph tracks the SDK's, and committing both would churn
+# on every SDK dep bump.
+/target
+Cargo.lock

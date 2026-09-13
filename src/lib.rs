@@ -80,8 +80,8 @@ pub use types::hitl::{
     HITLReviewInput, HITLStats,
 };
 pub use types::pep::{
-    DecideRequest, DecideResponse, DecisionCallerIdentity, DecisionTarget, MCPCheckInputRequest,
-    MCPCheckInputResponse, MCPCheckOutputRequest, MCPCheckOutputResponse, Obligation,
-    ObligationFulfillment,
+    DecideRequest, DecideResponse, DecisionCallerIdentity, DecisionTarget, LegacyValidatorAction,
+    MCPCheckInputRequest, MCPCheckInputResponse, MCPCheckOutputRequest, MCPCheckOutputResponse,
+    Obligation, ObligationFulfillment, PolicyIdentity,
 };
 pub use types::policies::PolicyCategory;

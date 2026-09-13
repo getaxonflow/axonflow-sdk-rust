@@ -5,6 +5,23 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **What decided a governed request, as a v11.0.0 platform reports it.**
+  `DecideResponse`, `MCPCheckOutputResponse` and `ClientResponse` gain
+  `engine`, `subject_type`, `policy_bundle` and `legacy_validators`; a
+  `DecideResponse` also gains `policy_identities`, `policy_packs` and
+  `document_version`. The new types are `PolicyIdentity` (one matched policy,
+  named) and `LegacyValidatorAction` (a checksum validator that acted before
+  the engine decided). Every field is `None` on an older platform and on a
+  refusal no engine decided, and a JSON `null` reads as `None`.
+- **`query_connector` carries that provenance too.** A connector query is
+  dispatched through `/api/request`, and its `ConnectorResponse` was built
+  from that answer by hand, dropping every field not copied; it now carries
+  the four provenance fields of the `/api/request` response.
+
 ## [0.10.0] - 2026-09-06: telemetry parity, and a cold-path ping that a short-lived process actually delivers
 
 ### Added

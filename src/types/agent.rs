@@ -64,6 +64,23 @@ pub struct ClientResponse {
     pub policy_info: Option<PolicyEvaluationInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_info: Option<BudgetInfo>,
+    /// Which policy engine authored this verdict: `anchored` (the decision
+    /// plane) or `legacy` (the proxy's tier engine, which authors the verdict
+    /// of a request the decision plane approved). `None` when the platform
+    /// did not report one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The type of principal the verdict was decided for: `User` for a
+    /// verified user token, `Client` when the client credential is the
+    /// principal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_type: Option<String>,
+    /// The digest of the policy set that decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_bundle: Option<String>,
+    /// The checksum validators that acted before the engine decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_validators: Option<Vec<crate::types::pep::LegacyValidatorAction>>,
 }
 
 impl ClientResponse {
@@ -80,6 +97,10 @@ impl ClientResponse {
             block_reason: None,
             policy_info: None,
             budget_info: None,
+            engine: None,
+            subject_type: None,
+            policy_bundle: None,
+            legacy_validators: None,
         }
     }
 }
@@ -249,6 +270,25 @@ pub struct ConnectorResponse {
     pub redacted_fields: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_info: Option<PolicyInfo>,
+    /// Carried from the `/api/request` response the query was dispatched
+    /// through, as are the three fields after it.
+    ///
+    /// Which policy engine authored this verdict (`anchored` on a v11.0.0
+    /// platform). `None` when the platform did not report one: an older
+    /// platform, or a refusal no engine decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The type of principal the verdict was decided for: `User` for a
+    /// verified user token, `Client` when the client credential is the
+    /// principal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_type: Option<String>,
+    /// The digest of the policy set that decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_bundle: Option<String>,
+    /// The checksum validators that acted before the engine decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_validators: Option<Vec<crate::types::pep::LegacyValidatorAction>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

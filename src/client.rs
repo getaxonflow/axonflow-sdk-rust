@@ -301,6 +301,12 @@ impl AxonFlowClient {
             redacted: false,
             redacted_fields: Vec::new(),
             policy_info: None,
+            // The query was dispatched through /api/request, so its provenance
+            // is that response's: carried here, not dropped.
+            engine: resp.engine,
+            subject_type: resp.subject_type,
+            policy_bundle: resp.policy_bundle,
+            legacy_validators: resp.legacy_validators,
         })
     }
 

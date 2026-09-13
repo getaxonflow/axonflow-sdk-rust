@@ -120,6 +120,41 @@ impl DecideRequest {
     }
 }
 
+/// A checksum validator that acted BEFORE the anchored engine decided.
+///
+/// Under an organization's recorded `pii=block` or `pii=redact` detection
+/// override, the Indonesia or India validator can block a request or mask a
+/// response ahead of the decision plane; `legacy_validators` names each one that
+/// did. Mirrors an item of the platform's `legacy_validators` array.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyValidatorAction {
+    /// `indonesia_pii` or `india_pii`.
+    pub validator: String,
+    /// `blocked` or `masked`.
+    pub action: String,
+}
+
+/// One policy a decision matched, as `policy_identities` names it. Mirrors
+/// platform `PolicyIdentity`.
+///
+/// An identifier is never presented as a name: `name` is the policy's own
+/// display name and is absent when it declares none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyIdentity {
+    /// The policy id, as `evaluated_policies` carries it.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Whose the policy is: `shipped`, `organization` or `pack`. Absent for an
+    /// id the engine did not activate, such as a checksum validator's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The version an organization's own policy or a pack's control was
+    /// published at. Absent for a shipped control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<i64>,
+}
+
 /// PDP verdict returned by `POST /api/v1/decide`. Mirrors platform `DecideResponse`.
 ///
 /// `obligations` is always a list so PEP code can iterate without a None-check.
@@ -144,6 +179,33 @@ pub struct DecideResponse {
     pub expires_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Which policy engine authored this verdict (`anchored` on a v11.0.0
+    /// platform). `None` when the platform did not report one: an older
+    /// platform, or a refusal no engine decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The type of principal the verdict was decided for: `User` for a
+    /// verified user token, `Client` when the client credential is the
+    /// principal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_type: Option<String>,
+    /// The digest of the policy set that decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_bundle: Option<String>,
+    /// The checksum validators that acted before the engine decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_validators: Option<Vec<LegacyValidatorAction>>,
+    /// Each entry of `evaluated_policies`, in the same order, named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_identities: Option<Vec<PolicyIdentity>>,
+    /// The add-on policy packs whose controls composed into `policy_bundle`,
+    /// each as `<pack id>@<pack document digest>`, sorted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_packs: Option<Vec<String>>,
+    /// The published version of the organization's active typed document.
+    /// `None` while it has published nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_version: Option<i64>,
 }
 
 /// Request to the MCP request-redaction endpoint (`POST /api/v1/mcp/check-input`).
@@ -232,4 +294,20 @@ pub struct MCPCheckOutputResponse {
     /// false so a PEP stays fail-closed against a platform that predates it.
     #[serde(default)]
     pub redaction_evaluated: bool,
+    /// Which policy engine authored this verdict (`anchored` on a v11.0.0
+    /// platform). `None` when the platform did not report one: an older
+    /// platform, or a refusal no engine decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The type of principal the verdict was decided for: `User` for a
+    /// verified user token, `Client` when the client credential is the
+    /// principal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_type: Option<String>,
+    /// The digest of the policy set that decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_bundle: Option<String>,
+    /// The checksum validators that acted before the engine decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_validators: Option<Vec<LegacyValidatorAction>>,
 }

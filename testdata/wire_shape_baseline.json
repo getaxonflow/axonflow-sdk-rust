@@ -246,11 +246,7 @@
       ],
       "spec_only": [
         "approval_request_id",
-        "engine",
-        "legacy_validators",
-        "media_analysis",
-        "policy_bundle",
-        "subject_type"
+        "media_analysis"
       ]
     },
     "DecideRequest": {
@@ -263,15 +259,7 @@
       "sdk_only": [
         "error"
       ],
-      "spec_only": [
-        "document_version",
-        "engine",
-        "legacy_validators",
-        "policy_bundle",
-        "policy_identities",
-        "policy_packs",
-        "subject_type"
-      ]
+      "spec_only": []
     },
     "DecisionExplanation": {
       "sdk_only": [],
@@ -333,13 +321,9 @@
         "redacted_message"
       ],
       "spec_only": [
-        "engine",
         "exfiltration_info",
-        "legacy_validators",
-        "policy_bundle",
         "policy_info",
-        "redacted_data",
-        "subject_type"
+        "redacted_data"
       ]
     },
     "PlanResponse": {
@@ -389,6 +373,7 @@
     "ObligationFulfillment",
     "PlanResponse",
     "PolicyEvaluationInfo",
+    "PolicyIdentity",
     "PolicyInfo",
     "PolicyMatchInfo",
     "RateLimitEnvelope",
