@@ -355,6 +355,10 @@ mod tests {
     /// The fixture names where it came from, so a stale one is visible: the
     /// source path, a full platform commit, the source's sha256, and a sorted,
     /// de-duplicated category list (getaxonflow/axonflow-enterprise#4224).
+    ///
+    /// It is kept byte-identical to the other SDKs' copies, so its `_comment`
+    /// names the Python test that reads it there; here, this test and
+    /// `every_category_the_shipped_posture_uses_is_known` read it.
     #[test]
     fn the_posture_fixture_names_its_source() {
         let posture = posture();

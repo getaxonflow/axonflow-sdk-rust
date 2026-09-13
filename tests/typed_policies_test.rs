@@ -6,8 +6,8 @@
 //! `runtime-e2e/typed_policies/`, and neither replaces the other.
 
 use axonflow_sdk_rust::{
-    AuthoringFinding, AxonFlowClient, AxonFlowConfig, AxonFlowError, PEPCapability, PEPHandshake,
-    TypedPolicyRefusal, HEADER_USER_TOKEN, PEP_HANDSHAKE_HEADER, TYPED_POLICIES_PATH,
+    AxonFlowClient, AxonFlowConfig, AxonFlowError, DecideRequest, PEPCapability, PEPHandshake,
+    TypedPolicyRefusal, DECIDE_PATH, HEADER_USER_TOKEN, PEP_HANDSHAKE_HEADER, TYPED_POLICIES_PATH,
 };
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
@@ -76,6 +76,9 @@ async fn edition_reads_the_boundary() {
         ResponseTemplate::new(200).set_body_json(json!({
             "success": true,
             "catalog": "default",
+            "catalog_digest": "sha256:cat",
+            "registry_version": 7,
+            "catalog_fixture": false,
             "root": "organization",
             "max_documents": -1,
             "constructs": {
@@ -94,6 +97,9 @@ async fn edition_reads_the_boundary() {
     .await;
     let edition = client(&server).typed_policies().edition().await.unwrap();
     assert!(edition.success);
+    assert_eq!(edition.catalog_digest.as_deref(), Some("sha256:cat"));
+    assert_eq!(edition.registry_version, Some(7));
+    assert_eq!(edition.catalog_fixture, Some(false));
     assert_eq!(edition.root.as_deref(), Some("organization"));
     assert_eq!(edition.max_documents, Some(-1));
     let constructs = edition.constructs.expect("constructs");
@@ -131,24 +137,22 @@ async fn validate_sends_the_document_and_fixtures_and_returns_every_finding() {
         .await
         .unwrap();
     assert!(!validation.success);
+    assert_eq!(validation.findings.len(), 2);
+    let first = &validation.findings[0];
+    assert_eq!(first.code, "ACTION_NOT_REGISTERED");
+    assert_eq!(first.severity, "reject");
+    assert_eq!(first.policy_id.as_deref(), Some("grant.refund"));
     assert_eq!(
-        validation.findings,
-        vec![
-            AuthoringFinding {
-                code: "ACTION_NOT_REGISTERED".into(),
-                severity: "reject".into(),
-                policy_id: Some("grant.refund".into()),
-                summary: Some("the action is not registered".into()),
-                detail: Some("tool.not_registered".into()),
-            },
-            AuthoringFinding {
-                code: "UNUSED_ATTRIBUTE".into(),
-                severity: "warn".into(),
-                policy_id: None,
-                summary: None,
-                detail: None,
-            },
-        ]
+        first.summary.as_deref(),
+        Some("the action is not registered")
+    );
+    assert_eq!(first.detail.as_deref(), Some("tool.not_registered"));
+    let second = &validation.findings[1];
+    assert_eq!(second.code, "UNUSED_ATTRIBUTE");
+    assert_eq!(second.severity, "warn");
+    assert_eq!(
+        (&second.policy_id, &second.summary, &second.detail),
+        (&None, &None, &None)
     );
     assert_eq!(
         sent_body(&server).await,
@@ -205,7 +209,9 @@ async fn publish_sends_the_request_and_returns_the_digest() {
         "POST",
         "/publish",
         ResponseTemplate::new(200).set_body_json(json!({
-            "success": true, "digest": "sha256:abc", "version": 1, "findings": null
+            "success": true, "digest": "sha256:abc", "version": 1, "findings": null,
+            "template_omissions": {"omitted": ["sys_x"], "of": 3,
+                                   "message": "this document omits 1 of the 3 template controls: sys_x"}
         })),
     )
     .await;
@@ -218,6 +224,9 @@ async fn publish_sends_the_request_and_returns_the_digest() {
     assert_eq!(published.digest, "sha256:abc");
     assert_eq!(published.version, Some(1));
     assert!(published.findings.is_empty());
+    let report = published.template_omissions.expect("the report");
+    assert_eq!(report["omitted"], json!(["sys_x"]));
+    assert_eq!(published.template_omissions_unavailable, None);
     let requests = sent(&server).await;
     assert_eq!(requests[0].method.as_str(), "POST");
     assert_eq!(requests[0].url.path(), route("/publish"));
@@ -260,7 +269,8 @@ async fn activate_sends_the_digest_and_a_reason() {
         "POST",
         "/activate",
         ResponseTemplate::new(200).set_body_json(json!({
-            "success": true, "activation": {"digest": "d", "activated_by": "runtime-e2e"}
+            "success": true, "activation": {"digest": "d", "activated_by": "runtime-e2e"},
+            "template_omissions_unavailable": "the activated artifact could not be read back"
         })),
     )
     .await;
@@ -271,6 +281,11 @@ async fn activate_sends_the_digest_and_a_reason() {
         .unwrap();
     assert!(activation.success);
     assert_eq!(activation.activation["activated_by"], "runtime-e2e");
+    assert_eq!(activation.template_omissions, None);
+    assert_eq!(
+        activation.template_omissions_unavailable.as_deref(),
+        Some("the activated artifact could not be read back")
+    );
     assert_eq!(
         sent_body(&server).await,
         json!({"digest": "d", "reason": "quarterly review"})
@@ -344,6 +359,25 @@ async fn nothing_active_is_none() {
     );
 }
 
+/// Only the platform's own `nothing_active` is `None`: any other 404, from a
+/// platform without the typed routes or a base URL that is not an agent, is a
+/// refusal naming its status.
+#[tokio::test]
+async fn a_404_that_is_not_nothing_active_is_a_typed_refusal() {
+    for template in [
+        ResponseTemplate::new(404).set_body_string("404 page not found"),
+        ResponseTemplate::new(404).set_body_json(json!({
+            "success": false, "reason": "no_such_endpoint", "error": "no such typed-policies endpoint"
+        })),
+    ] {
+        let server = MockServer::start().await;
+        answer(&server, "GET", "/active", template).await;
+        let r = refused(client(&server).typed_policies().active().await.unwrap_err());
+        assert_eq!(r.status, 404);
+        assert_ne!(r.reason.as_deref(), Some("nothing_active"));
+    }
+}
+
 #[tokio::test]
 async fn active_that_is_not_an_object_is_an_error() {
     let server = MockServer::start().await;
@@ -374,9 +408,10 @@ async fn system_reads_the_shipped_corpus() {
             "success": true,
             "system": {
                 "root": "system", "version": 3, "digest": "sha256:sys", "authority": "platform",
-                "controls": [{"id": "sys_pii_email", "assurance": "advisory", "mandatory": false,
-                              "obligations": [{"type": "field_redact"}]}],
-                "assurance_counts": {"advisory": 1},
+                "controls": [{"id": "sys_pii_email", "name": "Email redaction", "assurance": "advisory",
+                              "obligations": [{"type": "field_redact"}]},
+                             {"id": "sys_sqli", "assurance": "enforcement", "mandatory": true}],
+                "assurance_counts": {"advisory": 1, "enforcement": 1},
                 "document": {"api_version": "axonflow.io/v1"}
             }
         })),
@@ -386,9 +421,12 @@ async fn system_reads_the_shipped_corpus() {
     assert_eq!(system.root.as_deref(), Some("system"));
     assert_eq!(system.version, Some(3));
     assert_eq!(system.digest.as_deref(), Some("sha256:sys"));
-    assert_eq!(system.controls.len(), 1);
+    assert_eq!(system.controls.len(), 2);
     assert_eq!(system.controls[0].id, "sys_pii_email");
-    assert_eq!(system.controls[0].mandatory, Some(false));
+    assert_eq!(system.controls[0].name.as_deref(), Some("Email redaction"));
+    // The platform omits `mandatory` when it is false.
+    assert!(!system.controls[0].mandatory);
+    assert!(system.controls[1].mandatory);
     assert_eq!(system.assurance_counts.get("advisory"), Some(&1));
     assert_eq!(system.document["api_version"], "axonflow.io/v1");
 }
@@ -533,34 +571,41 @@ async fn a_400_malformed_request_is_a_typed_refusal() {
     assert_eq!(r.retry_after, None);
 }
 
+/// The platform sends one code for the ceiling and for an admission outage;
+/// `Retry-After` is what marks the outage, the retryable one.
 #[tokio::test]
 async fn a_402_tier_limit_carries_its_code_and_retry_after() {
-    let r = refused(
-        refusal_on_publish(
-            ResponseTemplate::new(402)
-                .insert_header("Retry-After", "3600")
-                .set_body_json(json!({
-                    "success": false, "reason": "tier_limit", "code": "max_documents",
-                    "error": "the edition's document ceiling is reached"
-                })),
-        )
-        .await,
-    );
+    let err = refusal_on_publish(
+        ResponseTemplate::new(402)
+            .insert_header("Retry-After", "30")
+            .set_body_json(json!({
+                "success": false, "reason": "tier_limit", "code": "ERR_TIER_LIMIT_ORG_ROOT_POLICY",
+                "error": "tier admission could not be checked"
+            })),
+    )
+    .await;
+    assert!(err.is_retryable());
+    let r = refused(err);
     assert_eq!(r.status, 402);
     assert_eq!(r.reason.as_deref(), Some("tier_limit"));
-    assert_eq!(r.code.as_deref(), Some("max_documents"));
-    assert_eq!(r.retry_after, Some(3600));
+    assert_eq!(r.code.as_deref(), Some("ERR_TIER_LIMIT_ORG_ROOT_POLICY"));
+    assert_eq!(r.policy, None);
+    assert_eq!(r.retry_after, Some(30));
 }
 
+/// The ceiling itself: no `Retry-After`, the policy that crossed it named, and
+/// not retryable.
 #[tokio::test]
 async fn a_402_without_retry_after_has_none() {
-    let r = refused(
-        refusal_on_publish(ResponseTemplate::new(402).set_body_json(json!({
-            "success": false, "reason": "tier_limit", "code": "max_documents", "error": "ceiling"
-        })))
-        .await,
-    );
+    let err = refusal_on_publish(ResponseTemplate::new(402).set_body_json(json!({
+        "success": false, "reason": "tier_limit", "code": "ERR_TIER_LIMIT_ORG_ROOT_POLICY",
+        "error": "ceiling", "policy": "grant.refund"
+    })))
+    .await;
+    assert!(!err.is_retryable());
+    let r = refused(err);
     assert_eq!(r.retry_after, None);
+    assert_eq!(r.policy.as_deref(), Some("grant.refund"));
 }
 
 /// Only a plain non-negative integer is a `Retry-After` this reads: `+5`
@@ -664,21 +709,19 @@ async fn a_422_document_refused_carries_its_findings() {
     assert_eq!(r.findings[0].policy_id.as_deref(), Some("grant.refund"));
 }
 
+/// A cap the platform clears only by a restart: it sends no `Retry-After`, and
+/// the refusal is not retryable.
 #[tokio::test]
-async fn a_429_artifact_cap_is_a_retryable_typed_refusal() {
-    let err = refusal_on_publish(
-        ResponseTemplate::new(429)
-            .insert_header("Retry-After", "60")
-            .set_body_json(
-                json!({"success": false, "reason": "artifact_cap", "error": "cap reached"}),
-            ),
-    )
+async fn a_429_artifact_cap_is_not_retryable() {
+    let err = refusal_on_publish(ResponseTemplate::new(429).set_body_json(
+        json!({"success": false, "reason": "artifact_cap", "error": "cap reached"}),
+    ))
     .await;
-    assert!(err.is_retryable());
+    assert!(!err.is_retryable());
     let r = refused(err);
     assert_eq!(r.status, 429);
     assert_eq!(r.reason.as_deref(), Some("artifact_cap"));
-    assert_eq!(r.retry_after, Some(60));
+    assert_eq!(r.retry_after, None);
 }
 
 #[tokio::test]
@@ -689,6 +732,29 @@ async fn a_503_storage_unavailable_is_a_retryable_typed_refusal() {
     .await;
     assert!(err.is_retryable());
     assert_eq!(refused(err).reason.as_deref(), Some("storage_unavailable"));
+}
+
+/// The one 5xx that reports a configuration fault is not retryable.
+#[tokio::test]
+async fn a_503_catalog_not_configured_is_not_retryable() {
+    let err = refusal_on_publish(ResponseTemplate::new(503).set_body_json(json!({
+        "success": false, "reason": "catalog_not_configured",
+        "error": "this deployment's typed-authoring vocabulary could not be resolved"
+    })))
+    .await;
+    assert!(!err.is_retryable());
+}
+
+/// A typed refusal is an authoring answer: never a reason to fail open, even
+/// when it is retryable.
+#[tokio::test]
+async fn a_typed_refusal_never_fails_open() {
+    let err = refusal_on_publish(ResponseTemplate::new(503).set_body_json(json!({
+        "success": false, "reason": "storage_unavailable", "error": "the database is unreachable"
+    })))
+    .await;
+    assert!(err.is_retryable());
+    assert!(!err.is_fail_open_eligible());
 }
 
 #[tokio::test]
@@ -715,6 +781,31 @@ async fn a_401_is_the_clients_authentication_error() {
         }
         other => panic!("expected ApiError 401, got {other:?}"),
     }
+}
+
+/// A 401 that names no `error` keeps its body, as every other route's
+/// authentication error does.
+#[tokio::test]
+async fn a_401_without_an_error_member_keeps_its_body() {
+    match refusal_on_publish(
+        ResponseTemplate::new(401).set_body_string("unauthorized: unknown client"),
+    )
+    .await
+    {
+        AxonFlowError::ApiError { status, message } => {
+            assert_eq!(status, 401);
+            assert_eq!(message, "unauthorized: unknown client");
+        }
+        other => panic!("expected ApiError 401, got {other:?}"),
+    }
+}
+
+/// Every non-2xx is a refusal, a 3xx the client did not follow included.
+#[tokio::test]
+async fn a_3xx_is_a_typed_refusal() {
+    let r = refused(refusal_on_publish(ResponseTemplate::new(300).set_body_string("choose")).await);
+    assert_eq!(r.status, 300);
+    assert_eq!(r.message, "HTTP 300 from /publish");
 }
 
 #[tokio::test]
@@ -769,24 +860,24 @@ async fn a_success_whose_body_is_not_an_object_is_an_error() {
     }
 }
 
-#[test]
-fn the_refusal_renders_its_status_reason_and_message() {
-    let r = TypedPolicyRefusal {
-        status: 409,
-        reason: Some("activation_refused".into()),
-        code: None,
-        message: "version does not advance".into(),
-        findings: Vec::new(),
-        retry_after: None,
-    };
+#[tokio::test]
+async fn the_refusal_renders_its_status_reason_and_message() {
+    let r = refused(
+        refusal_on_publish(ResponseTemplate::new(409).set_body_json(json!({
+            "success": false, "reason": "activation_refused", "error": "version does not advance"
+        })))
+        .await,
+    );
     assert_eq!(
         r.to_string(),
         "typed policy request refused (HTTP 409, activation_refused): version does not advance"
     );
-    let bare = TypedPolicyRefusal {
-        reason: None,
-        ..r.clone()
-    };
+    let bare = refused(
+        refusal_on_publish(
+            ResponseTemplate::new(409).set_body_json(json!({"error": "version does not advance"})),
+        )
+        .await,
+    );
     assert_eq!(
         bare.to_string(),
         "typed policy request refused (HTTP 409): version does not advance"
@@ -802,7 +893,9 @@ fn the_refusal_renders_its_status_reason_and_message() {
 // ---------------------------------------------------------------------------
 
 /// These routes do not read the PEP capability declaration, so a declaring
-/// client sends it on none of the six.
+/// client sends it on none of the six. The positive control is a `decide` from
+/// the same client, which does carry it: the absence is the route's, not a
+/// client that stopped declaring.
 #[tokio::test]
 async fn the_declaration_is_sent_on_none_of_the_six_routes() {
     let server = MockServer::start().await;
@@ -834,6 +927,11 @@ async fn the_declaration_is_sent_on_none_of_the_six_routes() {
         )
         .await;
     }
+    Mock::given(method("POST"))
+        .and(path(DECIDE_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"verdict": "allow"})))
+        .mount(&server)
+        .await;
     let declared = PEPHandshake::new(
         "sdk-rust-test",
         "https://pep.example.test",
@@ -849,10 +947,16 @@ async fn the_declaration_is_sent_on_none_of_the_six_routes() {
     typed.activate("d", None).await.unwrap();
     typed.active().await.unwrap();
     typed.system().await.unwrap();
+    c.decide(DecideRequest::new("tool", "the positive control"))
+        .await
+        .expect("the decide stub allows");
 
     let requests = sent(&server).await;
-    assert_eq!(requests.len(), 6, "positive control: all six were sent");
-    for r in &requests {
+    let (typed_requests, others): (Vec<&Request>, Vec<&Request>) = requests
+        .iter()
+        .partition(|r| r.url.path().starts_with(TYPED_POLICIES_PATH));
+    assert_eq!(typed_requests.len(), 6, "all six were sent");
+    for r in &typed_requests {
         assert!(
             r.headers.get(PEP_HANDSHAKE_HEADER).is_none(),
             "{} {} carried the declaration",
@@ -860,6 +964,12 @@ async fn the_declaration_is_sent_on_none_of_the_six_routes() {
             r.url.path()
         );
     }
+    assert_eq!(others.len(), 1);
+    assert_eq!(others[0].url.path(), DECIDE_PATH);
+    assert!(
+        others[0].headers.get(PEP_HANDSHAKE_HEADER).is_some(),
+        "positive control: the same client declares on decide"
+    );
 }
 
 /// The namespace borrows the client it came from, so a client derived for a

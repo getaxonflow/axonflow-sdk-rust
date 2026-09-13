@@ -41,17 +41,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Typed policy authoring, the v11 successor to the legacy policy routes.**
   `client.typed_policies()` reaches the six `/api/v1/typed-policies` routes:
   `edition()`, `validate(document, fixtures)`, `publish(document, fixtures)`,
-  `activate(digest, reason)`, `active()` (`None` when nothing is active) and
-  `system()`. The document is an opaque `serde_json::Value`, as the spec
-  declares it; the three spec-named types (`EditionConstructReport`,
-  `AuthoringFinding`, `TypedAuthoringDocumentRequest`) are modelled and
-  checked against the pinned spec, and a JSON `null` collection reads as
-  empty. Every refusal except a `401` is the new
-  `AxonFlowError::TypedPolicyRefusal` (status, reason, code, message,
-  findings, retry_after); a `401` stays `ApiError`. These routes need a
-  v11.0.0 platform, and do not read the PEP capability declaration, which is
-  not sent on them. `AxonFlowError` gains a variant, so a downstream
-  exhaustive `match` on it needs the new arm.
+  `activate(digest, reason)`, `active()` and `system()`. The document is an
+  opaque `serde_json::Value`, as the spec declares it; the three spec-named
+  types (`EditionConstructReport`, `AuthoringFinding`,
+  `TypedAuthoringDocumentRequest`) are modelled and checked against the
+  pinned spec, and a JSON `null` collection reads as empty. The answer types
+  are `#[non_exhaustive]`, so a member a later release reads is not a
+  breaking change. Every refusal except a `401` is the new
+  `AxonFlowError::TypedPolicyRefusal` (status, reason, code, policy, message,
+  findings, retry_after); a `401` stays `ApiError`. Its `is_retryable()`
+  follows the platform's `Retry-After`, not the status alone: a `402`
+  `tier_limit` that carries one (admission could not be checked) is
+  retryable, the ceiling itself and the `429` caps are not, and a 5xx is,
+  except `catalog_not_configured`; a typed refusal never triggers fail-open.
+  `active()` is `None` only for the platform's `nothing_active`; any other
+  `404`, from a platform before v11.0.0 or a base URL that is not an agent,
+  is a refusal with status `404`, where the Go and Python SDKs still answer
+  nothing active. `max_documents` counts customer-authored policies, not
+  documents. These routes need a v11.0.0 platform, and do not read the PEP
+  capability declaration, which is not sent on them.
+- **`AxonFlowError` is `#[non_exhaustive]`.** It gains `TypedPolicyRefusal`,
+  so a downstream exhaustive `match` changes once either way; the one `_` arm
+  it adds now also covers every variant a later release adds.
 
 ### Fixed
 

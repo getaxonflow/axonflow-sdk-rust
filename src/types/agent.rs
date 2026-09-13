@@ -8,7 +8,7 @@ use std::collections::HashMap;
 /// helper a payload containing `"policies_evaluated": null` would fail with
 /// "invalid type: null, expected a sequence". Combine with `#[serde(default)]`
 /// so both null AND missing are tolerated.
-fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+pub(crate) fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Default + Deserialize<'de>,

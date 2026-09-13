@@ -202,13 +202,38 @@ async fn main() -> ExitCode {
                 metadata["document_id"] == Value::String(document_id.clone()),
                 "active() is the document just activated",
             );
-            let reparsed: Option<Value> = serde_json::from_slice(&active.source).ok();
+            // The signed source must carry the policies that were published:
+            // compared by id against the request, not against a parse of the
+            // same bytes.
+            let ids = |doc: &Value| -> Vec<String> {
+                doc["policy"]["policies"]
+                    .as_array()
+                    .map(|all| {
+                        all.iter()
+                            .filter_map(|p| p["id"].as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let published_ids = ids(&document);
+            println!("  active policy ids: {:?}", ids(&active.document));
             run.check(
-                reparsed.as_ref() == Some(&active.document),
-                "its source is the signed bytes the document parses from",
+                !published_ids.is_empty() && ids(&active.document) == published_ids,
+                "the document in force carries the policies that were published",
+            );
+            // The author is the caller the agent stamped, never the name the
+            // request carried: a present, non-empty principal of its own.
+            let author = &metadata["author"];
+            let requested = &document["metadata"]["author"];
+            let local = author["local"].as_str().unwrap_or("");
+            println!(
+                "  author: type={} local={local:?} (the request named {})",
+                author["type"], requested["local"]
             );
             run.check(
-                metadata["author"]["local"] != "someone-else",
+                author["type"].as_str().is_some_and(|t| !t.is_empty())
+                    && !local.is_empty()
+                    && Some(local) != requested["local"].as_str(),
                 "the platform signed the caller as author, not the name in the request",
             );
         }
@@ -305,26 +330,15 @@ async fn main() -> ExitCode {
         ),
     }
 
-    println!("== no credentials");
-    // A Community agent resolves a caller that presents no credentials to its
-    // default client. The answer is printed either way; it must be a readable
-    // edition or a typed refusal, never a transport error.
+    println!("== no credentials (observed, not asserted)");
+    // What a Community agent answers a caller that presents no credentials is
+    // the deployment's business, not this SDK's; it is printed for the record.
     match client(&agent, false).typed_policies().edition().await {
-        Ok(e) => {
-            println!(
-                "  edition without credentials: success={} root={:?}",
-                e.success, e.root
-            );
-            run.check(true, "a client with no credentials gets a readable answer");
-        }
-        Err(ref e) if refusal(e).is_some() || matches!(e, AxonFlowError::ApiError { .. }) => {
-            println!("  edition without credentials: refused: {e}");
-            run.check(true, "a client with no credentials gets a readable answer");
-        }
-        Err(e) => run.check(
-            false,
-            &format!("a client with no credentials gets a readable answer (got {e})"),
+        Ok(e) => println!(
+            "  OBSERVED: edition without credentials: success={} root={:?}",
+            e.success, e.root
         ),
+        Err(e) => println!("  OBSERVED: edition without credentials: {e}"),
     }
 
     finish(&run)

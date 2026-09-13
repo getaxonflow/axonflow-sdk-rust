@@ -2,6 +2,12 @@ use crate::types::decisions::RateLimitEnvelope;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+/// Every error the SDK returns.
+///
+/// `#[non_exhaustive]`: a downstream `match` carries one `_` arm, and that arm
+/// covers every variant a later release adds, so adding one is not a breaking
+/// change.
+#[non_exhaustive]
 pub enum AxonFlowError {
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
@@ -64,17 +70,27 @@ impl AxonFlowError {
             AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
             AxonFlowError::RateLimited { .. } => true,
             AxonFlowError::Unavailable(_) => true,
-            AxonFlowError::TypedPolicyRefusal(r) => r.status >= 500 || r.status == 429,
+            // The platform's own signal, not the status alone: it sends
+            // Retry-After on the refusal it asks the caller to retry (a 402
+            // tier_limit raised because admission could not be checked) and
+            // none on its caps (429 artifact_cap and workspace_limit); a 5xx is
+            // transient except the 503 that reports a configuration fault.
+            AxonFlowError::TypedPolicyRefusal(r) => {
+                r.retry_after.is_some()
+                    || (r.status >= 500 && r.reason.as_deref() != Some("catalog_not_configured"))
+            }
             _ => false,
         }
     }
 
     /// Whether this error should trigger fail-open (return a synthetic success
-    /// response). Currently identical to [`Self::is_retryable`]; maintained as a
+    /// response). Identical to [`Self::is_retryable`] except that a typed
+    /// policy refusal is never eligible: it is an authoring answer, not an
+    /// unavailable platform, even when it is retryable. Maintained as a
     /// separate method because future policy changes may diverge them (e.g.
     /// `ConfigError` could be fail-open-eligible but not retryable).
     pub fn is_fail_open_eligible(&self) -> bool {
-        self.is_retryable()
+        !matches!(self, AxonFlowError::TypedPolicyRefusal(_)) && self.is_retryable()
     }
 }
 

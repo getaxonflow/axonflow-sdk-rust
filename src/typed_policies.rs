@@ -41,10 +41,13 @@
 //! authentication error. These routes do not read the PEP capability
 //! declaration, and the client never sends it on them. They need a v11.0.0
 //! platform.
+//!
+//! The answer types are `#[non_exhaustive]`: the platform adds members to these
+//! answers, and a member this SDK learns later is then not a breaking change.
 
 use crate::client::AxonFlowClient;
 use crate::error::AxonFlowError;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -52,29 +55,25 @@ use std::fmt;
 /// The route prefix the six operations share.
 pub const TYPED_POLICIES_PATH: &str = "/api/v1/typed-policies";
 
-/// The platform marshals a nil Go slice or map as JSON `null`, not `[]` or
-/// `{}`: a clean validation answers `"findings": null`. Every collection it
-/// declares without `omitempty` therefore reads `null` as empty.
-fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Default + Deserialize<'de>,
-{
-    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
-}
+// The platform marshals a nil Go slice or map as JSON `null`, not `[]` or `{}`:
+// a clean validation answers `"findings": null`. Every collection it declares
+// without `omitempty` therefore reads `null` as empty, through the crate's one
+// helper for it.
 
 /// What this edition may spend (the spec's `EditionConstructReport`).
 ///
-/// The booleans are `Option`s: absent and `false` are different answers, and
-/// an absent flag must not read as a permission's zero value.
+/// The booleans are `Option`s: the platform always sends them, so absent and
+/// `false` are different answers, and an absent flag must not read as a
+/// permission's zero value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct EditionConstructReport {
     /// `community`, `evaluation` or `enterprise`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edition: Option<String>,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub obligation_families: Vec<String>,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub attribute_namespaces: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_scope: Option<bool>,
@@ -83,13 +82,14 @@ pub struct EditionConstructReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_established: Option<bool>,
     /// Constructs withheld for want of an edition ruling, not by one.
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub reserved: Vec<String>,
 }
 
 /// One declared save-time or publication result (the spec's
 /// `AuthoringFinding`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AuthoringFinding {
     /// The finding code, for example `ACTION_NOT_REGISTERED`.
     pub code: String,
@@ -106,8 +106,10 @@ pub struct AuthoringFinding {
 }
 
 /// A candidate document and its fixtures (the spec's
-/// `TypedAuthoringDocumentRequest`).
+/// `TypedAuthoringDocumentRequest`). [`TypedPolicies::validate`] and
+/// [`TypedPolicies::publish`] build it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TypedAuthoringDocumentRequest {
     /// The authoring document. Opaque to this SDK on purpose: the spec declares
     /// it `type: object`, the authoring model itself rather than a mirror of
@@ -119,19 +121,41 @@ pub struct TypedAuthoringDocumentRequest {
     pub fixtures: Option<Vec<Value>>,
 }
 
+impl TypedAuthoringDocumentRequest {
+    fn new(document: &Value, fixtures: Option<&[Value]>) -> Self {
+        Self {
+            document: document.clone(),
+            fixtures: fixtures.map(<[Value]>::to_vec),
+        }
+    }
+}
+
 /// What this deployment may author.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TypedAuthoringEdition {
     #[serde(default)]
     pub success: bool,
     /// The configured authoring vocabulary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
+    /// The vocabulary snapshot's content digest: its identity, which a refusal,
+    /// a decision and a proof carry too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_digest: Option<String>,
+    /// The integer the wire carries for this vocabulary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_version: Option<i64>,
+    /// True for a test-world vocabulary, which the platform refuses to
+    /// activate a document against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_fixture: Option<bool>,
     /// The one authority root this surface publishes under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
-    /// Customer-authored documents admitted per organization; `-1` is
-    /// unlimited.
+    /// Customer-authored POLICIES (rules) admitted per organization; `-1` is
+    /// unlimited. The member's name is historical: an organization has one
+    /// active document, and the ceiling counts the policies inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_documents: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,32 +170,49 @@ pub struct TypedAuthoringEdition {
 /// Every finding for a candidate document. `success` is false when any is a
 /// rejection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TypedPolicyValidation {
     #[serde(default)]
     pub success: bool,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub findings: Vec<AuthoringFinding>,
 }
 
 /// A published artifact. Activation names `digest`, never the version.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TypedPolicyPublication {
     #[serde(default)]
     pub success: bool,
     pub digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub findings: Vec<AuthoringFinding>,
+    /// The platform's report of the shipped template's controls this document
+    /// omits, as the platform sent it; absent when it omits none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_omissions: Option<Value>,
+    /// Why that report could not be produced, when it could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_omissions_unavailable: Option<String>,
 }
 
 /// The audited activation record.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TypedPolicyActivation {
     #[serde(default)]
     pub success: bool,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub activation: Map<String, Value>,
+    /// The platform's report of the shipped template's controls the activated
+    /// document omits, as the platform sent it; absent when it omits none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_omissions: Option<Value>,
+    /// Why that report could not be produced, when it could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_omissions_unavailable: Option<String>,
 }
 
 /// The document in force.
@@ -179,6 +220,7 @@ pub struct TypedPolicyActivation {
 /// `source` is the exact byte sequence that was signed, so a caller can verify
 /// it; `document` is the same bytes parsed.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ActiveTypedPolicy {
     pub source: Vec<u8>,
     pub document: Value,
@@ -186,24 +228,30 @@ pub struct ActiveTypedPolicy {
 
 /// One shipped control, with what happens when it cannot be evaluated.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TypedPolicySystemControl {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority: Option<String>,
     /// `enforcement`, `gating_risk` or `advisory`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assurance: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mandatory: Option<bool>,
+    /// Whether an organization may not override it. The platform omits the
+    /// member when it is false, so absent reads as `false`.
+    #[serde(default)]
+    pub mandatory: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub obligations: Vec<Value>,
 }
 
 /// The platform's own controls: the system root activated beneath every
 /// organization.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TypedPolicySystemCorpus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
@@ -214,11 +262,11 @@ pub struct TypedPolicySystemCorpus {
     pub digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority: Option<String>,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub controls: Vec<TypedPolicySystemControl>,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub assurance_counts: BTreeMap<String, i64>,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::types::agent::null_to_default")]
     pub document: Map<String, Value>,
 }
 
@@ -227,16 +275,21 @@ pub struct TypedPolicySystemCorpus {
 /// `status` is the HTTP status and `reason` the platform's reason, for example
 /// `publication_refused` (422), `document_refused` (422, with the save-time
 /// findings), `activation_refused` (409), `tier_limit` (402, with `code`
-/// naming the limit) or `artifact_cap` (429). `findings` holds the declared
-/// findings a refused publication or document carries, and `retry_after` the
-/// seconds from `Retry-After` when the refusal is retryable. `message` is the
-/// platform's own explanation, or `HTTP <status> from <route>` when it gave
-/// none.
+/// naming the limit and `policy` the policy that crossed it) or `artifact_cap`
+/// (429). `findings` holds the declared findings a refused publication or
+/// document carries. `retry_after` is the seconds from `Retry-After`: the
+/// platform sends it on a refusal it asks the caller to retry, such as a `402`
+/// `tier_limit` raised because admission could not be checked, which is how
+/// that refusal differs from the ceiling itself. `message` is the platform's
+/// own explanation, or `HTTP <status> from <route>` when it gave none.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TypedPolicyRefusal {
     pub status: u16,
     pub reason: Option<String>,
     pub code: Option<String>,
+    /// The policy that crossed a tier boundary, when the refusal names one.
+    pub policy: Option<String>,
     pub message: String,
     pub findings: Vec<AuthoringFinding>,
     pub retry_after: Option<u64>,
@@ -273,10 +326,16 @@ fn refusal(status: u16, retry_after: Option<u64>, body: &[u8], route: &str) -> A
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
-    let message = text("error").unwrap_or_else(|| format!("HTTP {status} from {route}"));
     if status == 401 {
+        // The same message every other route's authentication error carries:
+        // the body as it came when it names no `error`.
+        let raw = String::from_utf8_lossy(body).trim().to_string();
+        let message = text("error")
+            .or_else(|| Some(raw).filter(|s| !s.is_empty()))
+            .unwrap_or_else(|| format!("HTTP {status} from {route}"));
         return AxonFlowError::ApiError { status, message };
     }
+    let message = text("error").unwrap_or_else(|| format!("HTTP {status} from {route}"));
     let findings = parsed
         .get("findings")
         .and_then(Value::as_array)
@@ -290,10 +349,21 @@ fn refusal(status: u16, retry_after: Option<u64>, body: &[u8], route: &str) -> A
         status,
         reason: text("reason"),
         code: text("code"),
+        policy: text("policy"),
         message,
         findings,
         retry_after,
     }))
+}
+
+/// The error for a 2xx answer whose body is not a JSON object.
+fn not_an_object(status: u16, route: &str) -> AxonFlowError {
+    AxonFlowError::ApiError {
+        status,
+        message: format!(
+            "{TYPED_POLICIES_PATH}{route} answered {status} with a body that is not an object"
+        ),
+    }
 }
 
 /// `Retry-After` in seconds, when it is a plain non-negative integer.
@@ -340,17 +410,12 @@ impl TypedPolicies<'_> {
         let status = response.status().as_u16();
         let wait = retry_after(&response);
         let body = response.bytes().await?;
-        if status >= 400 {
+        if !(200..300).contains(&status) {
             return Err(refusal(status, wait, &body, route));
         }
         match serde_json::from_slice::<Value>(&body) {
             Ok(value) if value.is_object() => Ok(value),
-            _ => Err(AxonFlowError::ApiError {
-                status,
-                message: format!(
-                    "{TYPED_POLICIES_PATH}{route} answered {status} with a body that is not an object"
-                ),
-            }),
+            _ => Err(not_an_object(status, route)),
         }
     }
 
@@ -368,7 +433,7 @@ impl TypedPolicies<'_> {
         self.object(response, route).await
     }
 
-    /// What this deployment may author: its construct boundary and document
+    /// What this deployment may author: its construct boundary and policy
     /// ceiling.
     pub async fn edition(&self) -> Result<TypedAuthoringEdition, AxonFlowError> {
         Ok(serde_json::from_value(self.get("/edition").await?)?)
@@ -383,10 +448,7 @@ impl TypedPolicies<'_> {
         document: &Value,
         fixtures: Option<&[Value]>,
     ) -> Result<TypedPolicyValidation, AxonFlowError> {
-        let request = TypedAuthoringDocumentRequest {
-            document: document.clone(),
-            fixtures: fixtures.map(<[Value]>::to_vec),
-        };
+        let request = TypedAuthoringDocumentRequest::new(document, fixtures);
         Ok(serde_json::from_value(
             self.post("/validate", &request).await?,
         )?)
@@ -410,10 +472,7 @@ impl TypedPolicies<'_> {
         document: &Value,
         fixtures: Option<&[Value]>,
     ) -> Result<TypedPolicyPublication, AxonFlowError> {
-        let request = TypedAuthoringDocumentRequest {
-            document: document.clone(),
-            fixtures: fixtures.map(<[Value]>::to_vec),
-        };
+        let request = TypedAuthoringDocumentRequest::new(document, fixtures);
         Ok(serde_json::from_value(
             self.post("/publish", &request).await?,
         )?)
@@ -443,31 +502,37 @@ impl TypedPolicies<'_> {
     }
 
     /// The document in force, as the exact bytes that were signed, or `None`
-    /// when nothing is active (the platform's `404`).
+    /// when nothing is active.
     ///
-    /// A platform without the typed routes (before v11.0.0) also answers `404`
-    /// here, because the route itself is missing; [`edition`](Self::edition)
-    /// tells the two apart.
+    /// `None` is the platform's own answer: a `404` whose reason is
+    /// `nothing_active`. Any other `404` is a
+    /// [`TypedPolicyRefusal`](AxonFlowError::TypedPolicyRefusal) with status
+    /// `404`: a platform without the typed routes (before v11.0.0), or a base
+    /// URL that is not an AxonFlow agent, is reported as such rather than as
+    /// "nothing active". The Go and Python SDKs still read any `404` as nothing
+    /// active.
     pub async fn active(&self) -> Result<Option<ActiveTypedPolicy>, AxonFlowError> {
         let route = "/active";
         let response = self.client.raw_get_as(&self.url(route), None).await?;
         let status = response.status().as_u16();
-        if status == 404 {
-            return Ok(None);
-        }
         let wait = retry_after(&response);
         let source = response.bytes().await?.to_vec();
-        if status >= 400 {
+        if status == 404
+            && serde_json::from_slice::<Value>(&source)
+                .ok()
+                .and_then(|body| body.get("reason").cloned())
+                == Some(Value::String("nothing_active".into()))
+        {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
             return Err(refusal(status, wait, &source, route));
         }
         match serde_json::from_slice::<Value>(&source) {
-            Ok(document) if document.is_object() => Ok(Some(ActiveTypedPolicy { source, document })),
-            _ => Err(AxonFlowError::ApiError {
-                status,
-                message: format!(
-                    "{TYPED_POLICIES_PATH}{route} answered {status} with a body that is not an object"
-                ),
-            }),
+            Ok(document) if document.is_object() => {
+                Ok(Some(ActiveTypedPolicy { source, document }))
+            }
+            _ => Err(not_an_object(status, route)),
         }
     }
 
