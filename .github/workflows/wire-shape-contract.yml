@@ -1,0 +1,116 @@
+name: Wire-Shape Contract
+
+# Guards the pin of the wire-shape contract. The contract itself,
+# tests/wire_shape_contract.rs, runs in the Test workflow with every other test;
+# this workflow checks the two things that test cannot:
+#
+# - A PR that moves the pin carries the 'spec-pin-bump' label. The pin is
+#   openapi_specs_sha in testdata/wire_shape_baseline.json AND every file under
+#   testdata/openapi/, the schema snapshot derived at that commit. A PR moving
+#   the pin together with SDK types could silence drift by retargeting the
+#   contract, so the move must be visible to review.
+# - The committed snapshot is exactly what scripts/snapshot_openapi_schemas.py
+#   derives: its own self-test, then --check-snapshot, which also requires every
+#   file's header to name one full platform commit.
+
+on:
+  pull_request:
+    branches: [main]
+    # The guard reads the PR's labels from the event payload. A label attached
+    # after the PR opens (`gh pr create --label` adds it in a second call) is not
+    # in the `opened` payload, so the guard must re-run when a label is added or
+    # removed, or its verdict describes stale labels.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - 'testdata/openapi/**'
+      - 'testdata/wire_shape_baseline.json'
+      - 'scripts/snapshot_openapi_schemas.py'
+      - '.github/workflows/wire-shape-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'testdata/openapi/**'
+      - 'testdata/wire_shape_baseline.json'
+      - 'scripts/snapshot_openapi_schemas.py'
+      - '.github/workflows/wire-shape-contract.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pin:
+    name: Wire-shape pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read the pinned OpenAPI specs SHA from the baseline
+        id: specs_sha
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import sys
+          path = "testdata/wire_shape_baseline.json"
+          sha = (json.load(open(path)).get("openapi_specs_sha", "") or "").strip()
+          if not sha:
+              print(f"::error::{path} has no openapi_specs_sha.", file=sys.stderr)
+              sys.exit(1)
+          print(f"sha={sha}")
+          PY
+
+      - name: Guard against an unlabelled pin change
+        if: github.event_name == 'pull_request'
+        env:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_SHA: ${{ steps.specs_sha.outputs.sha }}
+        run: |
+          set -e
+          BASE_SHA=$(
+            git show "origin/${BASE_REF}:testdata/wire_shape_baseline.json" 2>/dev/null \
+              | python3 -c "import json, sys; print(json.load(sys.stdin).get('openapi_specs_sha','') or '')" \
+              || true
+          )
+          if [ -z "$BASE_SHA" ]; then
+            echo "::notice::The base branch has no openapi_specs_sha yet; this PR introduces the pin."
+            exit 0
+          fi
+          SNAPSHOT_CHANGED=false
+          if ! git diff --quiet "origin/${BASE_REF}...HEAD" -- testdata/openapi/; then
+            SNAPSHOT_CHANGED=true
+          fi
+          if [ "$BASE_SHA" = "$PR_SHA" ] && [ "$SNAPSHOT_CHANGED" = false ]; then
+            echo "openapi_specs_sha unchanged (${PR_SHA}) and testdata/openapi/ unchanged."
+            exit 0
+          fi
+          echo "Pin change detected: openapi_specs_sha ${BASE_SHA} -> ${PR_SHA}; snapshot changed: ${SNAPSHOT_CHANGED}"
+          HAS_LABEL=$(printf '%s' "$PR_LABELS" | python3 -c "import json, sys; print('spec-pin-bump' in json.load(sys.stdin))")
+          if [ "$HAS_LABEL" = "True" ]; then
+            echo "::notice::'spec-pin-bump' label present: the pin change is authorized."
+            exit 0
+          fi
+          if [ "$BASE_SHA" != "$PR_SHA" ]; then
+            echo "::error::openapi_specs_sha changed from ${BASE_SHA} to ${PR_SHA}."
+          fi
+          if [ "$SNAPSHOT_CHANGED" = true ]; then
+            echo "::error::testdata/openapi/ changed; the spec snapshot is part of the pin."
+          fi
+          echo "::error::Split the pin change into its own PR, or apply the 'spec-pin-bump' label"
+          echo "::error::to acknowledge that it is intentional and has been reviewed on its own."
+          exit 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check the committed spec snapshot
+        run: |
+          python -m pip install --quiet pyyaml
+          python scripts/snapshot_openapi_schemas.py --self-test
+          python scripts/snapshot_openapi_schemas.py --check-snapshot testdata/openapi

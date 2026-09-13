@@ -64,6 +64,8 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # check that the committed generated file is current runs inside `cargo test`
 # rather than in a workflow step somebody can forget to add.
 axonflow-authzen-codegen = { path = "tools/gen-authzen-types" }
+# Reads src/ for the wire-shape contract (tests/wire_shape_contract.rs).
+syn = { version = "2", features = ["full"] }
 
 [[example]]
 name = "authzen"

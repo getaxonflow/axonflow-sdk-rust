@@ -71,6 +71,18 @@ If you've already built a Rust SDK in a private repository and want it landed he
 
 In all three cases we'll review against the API contract from the other SDKs and ask about license compatibility (the Rust SDK ships under MIT — your code needs to be MIT, Apache-2.0, BSD, or similar) and long-term maintenance plans.
 
+## Wire-shape contract
+
+`tests/wire_shape_contract.rs` compares the wire field names of every public serde struct in `src/` with the platform's OpenAPI schema of the same name, read from the snapshot in `testdata/openapi/` (see its README). It runs with the rest of `cargo test`.
+
+Known drift is recorded in `testdata/wire_shape_baseline.json`, and the contract fails on any difference from it, in either direction. When you add a field the spec declares, the contract tells you to remove it from the baseline; when a type stops matching a schema, it tells you which one. If a difference is deliberate, regenerate the baseline and say why in the PR:
+
+```bash
+WIRE_SHAPE_REFRESH=1 cargo test --test wire_shape_contract -- --ignored refresh_baseline
+```
+
+Never regenerate to silence a failure without reading it first. A PR that changes the snapshot or the baseline's `openapi_specs_sha` needs the `spec-pin-bump` label.
+
 ## Pull request expectations
 
 - Tests for any new client surface
