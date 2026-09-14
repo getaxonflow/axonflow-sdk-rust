@@ -64,8 +64,7 @@ declare it.
   except `catalog_not_configured`; a typed refusal never triggers fail-open.
   `active()` is `None` only for the platform's `nothing_active`; any other
   `404`, from a platform before v11.0.0 or a base URL that is not an agent,
-  is a refusal with status `404`, where the Go, Python, TypeScript and Java
-  SDKs still answer nothing active. `max_documents` counts customer-authored policies, not
+  is a refusal with status `404`. `max_documents` counts customer-authored policies, not
   documents. These routes need a v11.0.0 platform, and do not read the PEP
   capability declaration, which is not sent on them.
 - **Two runnable v11 examples, in the order to run them.**

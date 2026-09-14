@@ -511,8 +511,7 @@ impl TypedPolicies<'_> {
     /// [`TypedPolicyRefusal`](AxonFlowError::TypedPolicyRefusal) with status
     /// `404`: a platform without the typed routes (before v11.0.0), or a base
     /// URL that is not an AxonFlow agent, is reported as such rather than as
-    /// "nothing active". The Go, Python, TypeScript and Java SDKs still read
-    /// any `404` as nothing active.
+    /// "nothing active".
     ///
     /// `None` is only as reliable as that reason: the platform currently also
     /// answers `nothing_active` when its document store cannot be read
