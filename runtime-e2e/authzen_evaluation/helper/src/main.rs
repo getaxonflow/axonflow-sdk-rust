@@ -60,11 +60,11 @@ const EXPECTED_ASSERTIONS: usize = 14;
 
 /// A query the default community policy set permits.
 const ALLOWED_QUERY: &str = "what is our refund policy?";
-/// A query the default community policy set denies (SQL injection).
-// A destructive shell command, which the platform's shipped
-// sys_dangerous_destructive_fs control denies on /api/v1/decide and on this
-// surface alike. From AxonFlow v11.0.0 a SQL injection string is advisory by
-// default (the SQL injection rows store `warn`), so it no longer denies.
+/// A query the default community policy set denies: a destructive shell
+/// command, which the platform's shipped sys_dangerous_destructive_fs control
+/// denies on /api/v1/decide and on this surface alike. From AxonFlow v11.0.0 a
+/// SQL injection string is advisory by default (the SQL injection rows store
+/// `warn`), so it no longer denies.
 const DENIED_QUERY: &str = "run rm -rf /var/lib/app to free disk space";
 
 /// The refusal codes that mean "the adapter READ this envelope and could not

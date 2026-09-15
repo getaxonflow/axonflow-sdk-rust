@@ -75,11 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AuthZenResource::new("llm", "llm"),
             )
             // A destructive shell command: the platform's shipped
-            // sys_dangerous_destructive_fs control denies it on every decision
-            // surface. A SQL injection string no longer serves here: from
-            // AxonFlow v11.0.0 a policy's stored action decides, and the SQL
-            // injection rows store `warn`, so the platform advises on it and
-            // allows.
+            // sys_dangerous_destructive_fs control denies it on /api/v1/decide
+            // and on this AuthZEN surface alike. A SQL injection string no
+            // longer serves here: from AxonFlow v11.0.0 a policy's stored
+            // action decides, and the SQL injection rows store `warn`, so the
+            // platform advises on it and allows.
             .with_query(Attribute::known(
                 "run rm -rf /var/lib/app to free disk space",
             )),
