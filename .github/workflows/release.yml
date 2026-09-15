@@ -143,7 +143,9 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           for i in $(seq 1 30); do
-            if curl -sf "https://crates.io/api/v1/crates/axonflow-sdk-rust/${VERSION}" > /dev/null; then
+            # crates.io answers 403 to a request with no identifying User-Agent, so
+            # without one this check never passes, even for a live version.
+            if curl -sf -A "axonflow-release-verify (engineering@getaxonflow.com)" "https://crates.io/api/v1/crates/axonflow-sdk-rust/${VERSION}" > /dev/null; then
               echo "✅ axonflow-sdk-rust@${VERSION} is live on crates.io (after ${i} attempt(s))"
               exit 0
             fi
