@@ -74,7 +74,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AuthZenAction::new("llm.completion"),
                 AuthZenResource::new("llm", "llm"),
             )
-            .with_query(Attribute::known("'; DROP TABLE users; --")),
+            // A destructive shell command: the platform's shipped
+            // sys_dangerous_destructive_fs control denies it on every decision
+            // surface. A SQL injection string no longer serves here: from
+            // AxonFlow v11.0.0 a policy's stored action decides, and the SQL
+            // injection rows store `warn`, so the platform advises on it and
+            // allows.
+            .with_query(Attribute::known(
+                "run rm -rf /var/lib/app to free disk space",
+            )),
         )
         .await?;
     expect_allowed(&decision, false, "2. a denied completion")?;
