@@ -2,14 +2,14 @@
 
 The wire-shape contract (`tests/wire_shape_contract.rs`, run by `cargo test` in the Test workflow) diffs the SDK's serde types against the platform's OpenAPI specs. It reads the schema declarations under `components.schemas` and the names of each one's `properties`.
 
-The four files here hold exactly that, and nothing else. `scripts/snapshot_openapi_schemas.py`, vendored byte-identical from the other AxonFlow SDKs, derives them from the platform's `docs/api/*.yaml` at platform commit `36e0e96b7e5c16626d394272b727b533f2b94a04`, the v11.0.0 candidate. It works on the YAML node graph, so every declaration survives in source order, including a schema declared twice in one file and a declaration with no properties. It drops descriptions, types, paths and the `info` block; the full specs carry the platform's own licence statement there, and this repository is MIT. `python scripts/snapshot_openapi_schemas.py --self-test` checks all of this on a planted spec.
+The four files here hold exactly that, and nothing else. `scripts/snapshot_openapi_schemas.py`, vendored byte-identical from the other AxonFlow SDKs, derives them from the platform's `docs/api/*.yaml` at platform commit `ba5201a52edd2bfbe9f1dadd736f19cae03d9cc4`, the merged platform source for the v11.2.0 train. It works on the YAML node graph, so every declaration survives in source order, including a schema declared twice in one file and a declaration with no properties. It drops descriptions, types, paths and the `info` block; the full specs carry the platform's own licence statement there, and this repository is MIT. `python scripts/snapshot_openapi_schemas.py --self-test` checks all of this on a planted spec.
 
 | File | sha256 of the source spec |
 |---|---|
-| `agent-api.yaml` | `49bd1b145cd3b2d29e8cc8de240cc184d4f5d24f83b6c546894d1f0a682a032a` |
-| `masfeat-api.yaml` | `2d49d6af2d5b1510b373c01fce1df2b712b32766b14d477652797746c52147e7` |
-| `orchestrator-api.yaml` | `b173c9bec456e4af3aa09c63306e503caa73ca0cf61da3dfaa7b21453dcd1188` |
-| `policy-api.yaml` | `090730a359bf242b6ed5c1a0d63a2831c749583bd957cc3ecc64c99ead5514b7` |
+| `agent-api.yaml` | `617e6236f91dd7716baaab8e2f22ef24f1713ebfd4938cc52a60a3368e3acb1a` |
+| `masfeat-api.yaml` | `eb224773c2a14fc6a84a630b652b17e010a4776da28529b13e173b002d2d4756` |
+| `orchestrator-api.yaml` | `a1f96d929ff35acb1204ce5ba3c6e605b8f91d93e7fa62a2fa8a760ea8486860` |
+| `policy-api.yaml` | `a1a7aff59d759033f99721a40d942e8750c6026d69f9efb0edf66016f0069ae9` |
 
 Each file's header repeats its source path, commit and digest. The files are byte-identical to the Python and TypeScript SDKs' snapshots at the same commit.
 

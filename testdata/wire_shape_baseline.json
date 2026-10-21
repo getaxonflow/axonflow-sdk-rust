@@ -118,6 +118,7 @@
         "status",
         "tier",
         "timestamp",
+        "upstream",
         "version"
       ],
       "orchestrator-api.yaml": [
@@ -148,6 +149,30 @@
         "timestamp"
       ]
     },
+    "PendingApproval": {
+      "agent-api.yaml": [
+        "approval_id",
+        "expires_at",
+        "plane",
+        "retry",
+        "status"
+      ],
+      "orchestrator-api.yaml": [
+        "approval_status",
+        "created_at",
+        "decision",
+        "decision_reason",
+        "plan_id",
+        "policies_matched",
+        "step_id",
+        "step_index",
+        "step_input",
+        "step_name",
+        "step_type",
+        "workflow_id",
+        "workflow_name"
+      ]
+    },
     "UpdatePolicyRequest": {
       "orchestrator-api.yaml": [
         "action",
@@ -173,7 +198,7 @@
       ]
     }
   },
-  "openapi_specs_sha": "36e0e96b7e5c16626d394272b727b533f2b94a04",
+  "openapi_specs_sha": "ba5201a52edd2bfbe9f1dadd736f19cae03d9cc4",
   "per_type_drift": {
     "AuditLogEntry": {
       "sdk_only": [
@@ -245,8 +270,10 @@
         "request_id"
       ],
       "spec_only": [
-        "approval_request_id",
-        "media_analysis"
+        "code",
+        "media_analysis",
+        "policy_packs",
+        "response_plane"
       ]
     },
     "DecideRequest": {
@@ -268,12 +295,6 @@
         "policy_version_at_decision"
       ]
     },
-    "DecisionTarget": {
-      "sdk_only": [],
-      "spec_only": [
-        "server"
-      ]
-    },
     "HITLApprovalRequest": {
       "sdk_only": [],
       "spec_only": [
@@ -286,6 +307,7 @@
     "MCPCheckInputRequest": {
       "sdk_only": [],
       "spec_only": [
+        "approval_id",
         "client_id",
         "parameters",
         "tool",
@@ -297,11 +319,19 @@
     "MCPCheckInputResponse": {
       "sdk_only": [],
       "spec_only": [
+        "approval_id",
+        "engine",
+        "legacy_validators",
         "override_available",
         "override_existing_id",
+        "pending_approval",
+        "policy_bundle",
         "policy_info",
         "policy_matches",
-        "risk_level"
+        "policy_packs",
+        "redacted_parameters",
+        "risk_level",
+        "subject_type"
       ]
     },
     "MCPCheckOutputRequest": {
@@ -323,6 +353,7 @@
       "spec_only": [
         "exfiltration_info",
         "policy_info",
+        "policy_packs",
         "redacted_data"
       ]
     },
@@ -331,20 +362,30 @@
         "estimated_duration"
       ],
       "spec_only": [
+        "engine",
+        "policy_bundle",
         "policy_info",
+        "subject_type",
+        "verdict",
         "workflow_execution_id"
+      ]
+    },
+    "PolicyEvaluationInfo": {
+      "sdk_only": [],
+      "spec_only": [
+        "matched_policies"
       ]
     },
     "PolicyInfo": {
       "sdk_only": [],
       "spec_only": [
-        "dynamic_policy_info",
         "exfiltration_check"
       ]
     },
     "RateLimitEnvelope": {
       "sdk_only": [],
       "spec_only": [
+        "code",
         "resets_at",
         "window"
       ]

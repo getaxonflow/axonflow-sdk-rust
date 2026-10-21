@@ -50,6 +50,7 @@ fn build_request(tenant: Option<&str>, user_token: Option<&str>) -> DecideReques
         },
         user_token: user_token.map(|s| s.to_string()),
         context: None,
+        approval_id: None,
     }
 }
 
