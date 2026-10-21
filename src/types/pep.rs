@@ -87,6 +87,9 @@ pub struct DecisionTarget {
     /// When `type=tool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Exact MCP server identity for a governed tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 /// Inbound contract for `POST /api/v1/decide`. Mirrors platform `DecideRequest`.
@@ -106,6 +109,30 @@ pub struct DecideRequest {
     pub user_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<serde_json::Value>,
+    /// Approval id returned by a held Decision API call, supplied on retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+}
+
+/// How a held call names its approval on retry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DecisionApprovalRetry {
+    pub header: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_field: Option<String>,
+}
+
+/// An approval hold is not permission to forward the protected call.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DecisionPendingApproval {
+    pub approval_id: String,
+    pub status: String,
+    pub plane: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    pub retry: DecisionApprovalRetry,
 }
 
 impl DecideRequest {
@@ -206,6 +233,12 @@ pub struct DecideResponse {
     /// `None` while it has published nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document_version: Option<i64>,
+    /// Held decision awaiting a person's review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_approval: Option<DecisionPendingApproval>,
+    /// Approval consumed by an allowed retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
 }
 
 /// Request to the MCP request-redaction endpoint (`POST /api/v1/mcp/check-input`).

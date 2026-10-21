@@ -10,7 +10,7 @@
 //! `None` too.
 
 use axonflow_sdk_rust::{
-    AxonFlowClient, AxonFlowConfig, CacheConfig, ClientResponse, DecideResponse,
+    AxonFlowClient, AxonFlowConfig, CacheConfig, ClientResponse, DecideRequest, DecideResponse,
     LegacyValidatorAction, MCPCheckOutputResponse, PolicyIdentity,
 };
 use serde_json::json;
@@ -19,6 +19,38 @@ use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const BUNDLE: &str = "sha256:0a70b037ed02cd7f65ae1f69742fcc978b5b4b53c199eeb2a3d59bd4d4fdc9e5";
+
+#[test]
+fn payment_approval_hold_and_retry_wire_round_trip() {
+    let mut request = DecideRequest::new("tool", "transfer");
+    request.target.r#type = Some("tool".into());
+    request.target.server = Some("payments-live".into());
+    request.target.tool = Some("execute_payment".into());
+    request.approval_id = Some("approval-123".into());
+    let body = serde_json::to_value(&request).unwrap();
+    assert_eq!(body["target"]["server"], "payments-live");
+    assert_eq!(body["approval_id"], "approval-123");
+
+    let held: DecideResponse = serde_json::from_value(json!({
+        "verdict": "needs_approval",
+        "pending_approval": {
+            "approval_id": "approval-123",
+            "status": "pending",
+            "plane": "decide",
+            "retry": {"header": "X-Axonflow-Approval-Id", "body_field": "approval_id"}
+        }
+    }))
+    .unwrap();
+    let pending = held.pending_approval.unwrap();
+    assert_eq!(pending.approval_id, "approval-123");
+    assert_eq!(pending.retry.body_field.as_deref(), Some("approval_id"));
+
+    let allowed: DecideResponse = serde_json::from_value(json!({
+        "verdict": "allow", "approval_id": "approval-123"
+    }))
+    .unwrap();
+    assert_eq!(allowed.approval_id.as_deref(), Some("approval-123"));
+}
 
 fn validator(validator: &str, action: &str) -> LegacyValidatorAction {
     LegacyValidatorAction {

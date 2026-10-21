@@ -250,14 +250,18 @@
       ]
     },
     "DecideRequest": {
-      "sdk_only": [],
+      "sdk_only": [
+        "approval_id"
+      ],
       "spec_only": [
         "fulfillment_capabilities"
       ]
     },
     "DecideResponse": {
       "sdk_only": [
-        "error"
+        "approval_id",
+        "error",
+        "pending_approval"
       ],
       "spec_only": []
     },
@@ -266,12 +270,6 @@
       "spec_only": [
         "latest_policy_version",
         "policy_version_at_decision"
-      ]
-    },
-    "DecisionTarget": {
-      "sdk_only": [],
-      "spec_only": [
-        "server"
       ]
     },
     "HITLApprovalRequest": {

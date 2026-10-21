@@ -92,8 +92,9 @@ pub use types::hitl::{
     HITLReviewInput, HITLStats,
 };
 pub use types::pep::{
-    DecideRequest, DecideResponse, DecisionCallerIdentity, DecisionTarget, LegacyValidatorAction,
-    MCPCheckInputRequest, MCPCheckInputResponse, MCPCheckOutputRequest, MCPCheckOutputResponse,
-    Obligation, ObligationFulfillment, PolicyIdentity,
+    DecideRequest, DecideResponse, DecisionApprovalRetry, DecisionCallerIdentity,
+    DecisionPendingApproval, DecisionTarget, LegacyValidatorAction, MCPCheckInputRequest,
+    MCPCheckInputResponse, MCPCheckOutputRequest, MCPCheckOutputResponse, Obligation,
+    ObligationFulfillment, PolicyIdentity,
 };
 pub use types::policies::PolicyCategory;

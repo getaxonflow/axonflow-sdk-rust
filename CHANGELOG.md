@@ -5,6 +5,12 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-10-21: Decision API approval retry fields
+
+### Added
+
+- Decision API payment approval wire fields: exact `target.server`, request `approval_id`, and response `pending_approval` and consumed `approval_id`. A hold is never an allow verdict; retry only after human approval and forward the payment only on an allow verdict for the spent approval. Adding fields to public structs requires callers using exhaustive struct literals to add them or use `..Default::default()`.
+
 ## [0.11.0] - 2026-09-14: decision provenance, the PEP capability handshake, and typed policy authoring
 
 The first Rust SDK release carrying these entries sends the PEP capability
