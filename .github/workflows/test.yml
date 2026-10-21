@@ -63,7 +63,7 @@ jobs:
     # heartbeat and the dispatch funnel one at a time and requires the named
     # test to go red.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/mutation-gate.sh
@@ -76,7 +76,7 @@ jobs:
     # /v1/ping, and asserts on the bytes that reached the wire. Self-contained
     # (no platform stack), so it runs on every PR rather than only on demand.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./runtime-e2e/3660_health_relay_telemetry/test.sh
