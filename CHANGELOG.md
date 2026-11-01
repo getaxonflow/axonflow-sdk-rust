@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - An answered Hosted `402 hosted_payment_required` is terminal under the default retry path and never becomes a production fail-open success. Explicit legacy self-hosted blocked `402` verdicts keep their response shape.
-- An answered Hosted `429 hosted_monthly_limit_reached` is terminal after one request and never becomes a production fail-open success. Ordinary `429` capacity responses remain retryable.
+- An answered Hosted `429 hosted_monthly_limit_reached` is a terminal `HostedMonthlyLimit` error after one request, even when a truncated body retains only the Agent's monthly-tier header. It never becomes a production fail-open success. Ordinary `429` capacity responses remain retryable.
 
 ## [0.12.0] - 2026-10-21: Decision API approval retry fields
 

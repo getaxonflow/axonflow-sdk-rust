@@ -1,5 +1,5 @@
 use crate::config::{AxonFlowConfig, Mode};
-use crate::error::AxonFlowError;
+use crate::error::{is_hosted_monthly_limit, AxonFlowError};
 use crate::heartbeat::maybe_send_heartbeat_on_request;
 use crate::pep_handshake::{PEPHandshake, PEP_HANDSHAKE_HEADER};
 use crate::types::agent::{ClientRequest, ClientResponse};
@@ -911,6 +911,9 @@ impl AxonFlowClient {
             match self.execute_request(req).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
+                    if matches!(&e, AxonFlowError::HostedMonthlyLimit { .. }) {
+                        return Err(e);
+                    }
                     if let AxonFlowError::ApiError { status, .. } = &e {
                         // An answered 402/403 without an explicit blocked
                         // verdict is an error, not an unavailable platform.
@@ -937,7 +940,17 @@ impl AxonFlowClient {
             .await?;
 
         let status = resp.status();
+        let hosted_monthly_limit_header = status.as_u16() == 429
+            && resp
+                .headers()
+                .get("X-Axonflow-Tier-Limit")
+                .is_some_and(|value| value == "monthly_governed_events");
         let body = resp.text().await?;
+
+        if status.as_u16() == 429 && (hosted_monthly_limit_header || is_hosted_monthly_limit(&body))
+        {
+            return Err(AxonFlowError::HostedMonthlyLimit { message: body });
+        }
 
         if status.is_success() || status.as_u16() == 402 || status.as_u16() == 403 {
             match serde_json::from_str::<ClientResponse>(&body) {

@@ -511,44 +511,55 @@ async fn test_429_is_retried_allowlist_contract() {
 
 #[tokio::test]
 async fn hosted_monthly_limit_429_is_terminal_in_production() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/request"))
-        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
-            "error": "hosted_monthly_limit_reached",
-            "message": "Monthly hosted governance allowance reached.",
-            "limit_type": "monthly_governed_events",
-            "higher_usage_path": "paid_enterprise_poc"
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = AxonFlowClient::new(AxonFlowConfig {
-        endpoint: server.uri(),
-        mode: Mode::Production,
-        retry: RetryConfig {
-            enabled: true,
-            max_attempts: 3,
-            initial_delay: Duration::from_millis(1),
-        },
-        cache: CacheConfig {
-            enabled: false,
-            ..Default::default()
-        },
-        ..Default::default()
+    let exact = json!({
+        "error": "hosted_monthly_limit_reached",
+        "message": "Monthly hosted governance allowance reached.",
+        "limit_type": "monthly_governed_events",
+        "higher_usage_path": "paid_enterprise_poc"
     })
-    .unwrap();
-
-    let result = client
-        .proxy_llm_call("user", "monthly cap probe", "chat", HashMap::new())
-        .await;
-    match result {
-        Err(axonflow_sdk_rust::AxonFlowError::ApiError { status, message }) => {
-            assert_eq!(status, 429);
-            assert!(message.contains("hosted_monthly_limit_reached"));
+    .to_string();
+    for (body, header) in [
+        (exact.as_str(), true),
+        (exact.as_str(), false),
+        (r#"{"error":"hosted_monthly_limit_reached""#, true),
+    ] {
+        let server = MockServer::start().await;
+        let mut response = ResponseTemplate::new(429).set_body_string(body);
+        if header {
+            response = response.insert_header("X-Axonflow-Tier-Limit", "monthly_governed_events");
         }
-        other => panic!("Hosted monthly cap must be terminal, got {other:?}"),
+        Mock::given(method("POST"))
+            .and(path("/api/request"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AxonFlowClient::new(AxonFlowConfig {
+            endpoint: server.uri(),
+            mode: Mode::Production,
+            retry: RetryConfig {
+                enabled: true,
+                max_attempts: 3,
+                initial_delay: Duration::from_millis(1),
+            },
+            cache: CacheConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result = client
+            .proxy_llm_call("user", "monthly cap probe", "chat", HashMap::new())
+            .await;
+        match result {
+            Err(axonflow_sdk_rust::AxonFlowError::HostedMonthlyLimit { message }) => {
+                assert_eq!(message, body);
+            }
+            other => panic!("Hosted monthly cap must be terminal, got {other:?}"),
+        }
     }
 }
 
