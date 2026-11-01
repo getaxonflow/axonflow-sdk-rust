@@ -16,9 +16,9 @@ async fn main() {
         std::process::exit(2);
     }
     let expected = std::env::var("AXONFLOW_HOSTED_EXPECTED_STATUS").unwrap_or_default();
-    let (expected_status, expected_code) = match expected.as_str() {
-        "402" => (402, "hosted_payment_required"),
-        "429" => (429, "hosted_monthly_limit_reached"),
+    let expected_code = match expected.as_str() {
+        "402" => "hosted_payment_required",
+        "429" => "hosted_monthly_limit_reached",
         _ => {
             eprintln!("AXONFLOW_HOSTED_EXPECTED_STATUS must be 402 or 429");
             std::process::exit(2);
@@ -47,10 +47,16 @@ async fn main() {
         )
         .await
     {
-        Err(AxonFlowError::ApiError { status, message })
-            if status == expected_status && message.contains(expected_code) =>
+        Err(AxonFlowError::ApiError {
+            status: 402,
+            message,
+        }) if expected == "402" && message.contains(expected_code) => {
+            println!("PASS: real Hosted staging 402 is a terminal Rust error");
+        }
+        Err(AxonFlowError::HostedMonthlyLimit { message })
+            if expected == "429" && message.contains(expected_code) =>
         {
-            println!("PASS: real Hosted staging {expected_status} is a terminal Rust error");
+            println!("PASS: real Hosted staging 429 is a terminal Rust error");
         }
         _ => {
             eprintln!("Hosted refusal did not surface as a terminal HTTP error");
