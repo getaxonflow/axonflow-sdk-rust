@@ -1,0 +1,9 @@
+[package]
+name = "hosted-paid-refusal-helper"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axonflow-sdk-rust = { path = "../../.." }
+tokio = { version = "1.52", features = ["full"] }

@@ -889,17 +889,9 @@ impl AxonFlowClient {
     ///   issue [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
     ///   for the customer-observed retry loop that motivated the
     ///   regression-locking test `test_401_not_retried_issue_2275`.
-    /// - 400, 404, 405, 406, 408, 409, 410, 411, 412, 413, 414, 415,
-    ///   416, 417, 418, 421, 422, 423, 424, 425, 426, 428, 431, 451 —
-    ///   every other 4xx that isn't in the `{429, 402, 403}` allowlist.
-    ///
-    /// **Caveat on 402/403:** `execute_request` returns 402 + 403 as
-    /// `Ok(client_resp)` because those are SUCCESS responses carrying
-    /// policy/quota envelope data — not errors. They never reach this
-    /// function as `Err`, so the `*status != 402` and `*status != 403`
-    /// clauses below are functionally dead in current code. They're
-    /// kept as intent-preserving belt-and-suspenders for any future
-    /// refactor that converts 402/403 back to `Err`.
+    /// - Every other 4xx, including an answered Hosted 402. Legacy
+    ///   self-hosted 402/403 responses with an explicit blocked verdict
+    ///   return as `Ok(client_resp)` and do not enter this retry loop.
     ///
     /// See `CHANGELOG.md` for the contract's history.
     async fn execute_with_retry(
@@ -919,23 +911,10 @@ impl AxonFlowClient {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
                     if let AxonFlowError::ApiError { status, .. } = &e {
-                        // Retry allowlist: any 4xx NOT in {429, 402, 403} is
-                        // terminal. 5xx always retries (falls through to the
-                        // `last_err = Some(e)` path below).
-                        //
-                        // 402/403 NEVER reach this branch as `Err`: see
-                        // `execute_request` at line 586 — those statuses
-                        // return as `Ok(client_resp)` because they carry
-                        // policy/quota envelope data. The `*status != 402`
-                        // and `*status != 403` clauses are intentional
-                        // belt-and-suspenders for a hypothetical future
-                        // refactor that errors on those statuses.
-                        if *status >= 400
-                            && *status < 500
-                            && *status != 429
-                            && *status != 402
-                            && *status != 403
-                        {
+                        // An answered 402/403 without an explicit blocked
+                        // verdict is an error, not an unavailable platform.
+                        // Only 429 remains retryable among 4xx statuses.
+                        if *status >= 400 && *status < 500 && *status != 429 {
                             return Err(e);
                         }
                     }
@@ -960,8 +939,8 @@ impl AxonFlowClient {
 
         if status.is_success() || status.as_u16() == 402 || status.as_u16() == 403 {
             match serde_json::from_str::<ClientResponse>(&body) {
-                Ok(r) => Ok(r),
-                Err(_) => Err(AxonFlowError::ApiError {
+                Ok(r) if status.is_success() || (!r.success && r.blocked) => Ok(r),
+                _ => Err(AxonFlowError::ApiError {
                     status: status.as_u16(),
                     message: body,
                 }),

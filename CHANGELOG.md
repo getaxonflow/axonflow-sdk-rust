@@ -5,6 +5,12 @@ All notable changes to the AxonFlow Rust SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- An answered Hosted `402 hosted_payment_required` is terminal under the default retry path and never becomes a production fail-open success. Explicit legacy self-hosted blocked `402` verdicts keep their response shape; `429` remains retryable.
+
 ## [0.12.0] - 2026-10-21: Decision API approval retry fields
 
 ### Added

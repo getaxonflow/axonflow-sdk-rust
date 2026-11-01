@@ -379,6 +379,91 @@ async fn test_401_not_retried_issue_2275() {
     assert!(result.is_err(), "401 must propagate as an error");
 }
 
+// The Hosted Agent's exact payment refusal has no `success` or `blocked`
+// fields. It must fail closed after one request even with production-mode
+// fail-open and the default retry path enabled.
+#[tokio::test]
+async fn hosted_payment_required_402_is_terminal() {
+    for body in [
+        r#"{"checkout_method":"POST","checkout_url":"https://try-staging.getaxonflow.com/api/v1/billing/checkout","error":"hosted_payment_required","message":"Hosted governance requires an active paid plan.","tenant_id":"cs_test_unpaid"}"#,
+        r#"{"error":"hosted_payment_required""#,
+        r#"{"success":true,"blocked":true,"error":"hosted_payment_required"}"#,
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/request"))
+            .respond_with(ResponseTemplate::new(402).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AxonFlowClient::new(AxonFlowConfig {
+            endpoint: server.uri(),
+            mode: Mode::Production,
+            retry: RetryConfig {
+                enabled: true,
+                max_attempts: 3,
+                initial_delay: Duration::from_millis(1),
+            },
+            cache: CacheConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result = client
+            .proxy_llm_call("user", "synthetic refusal probe", "chat", HashMap::new())
+            .await;
+        match result {
+            Err(axonflow_sdk_rust::AxonFlowError::ApiError { status, message }) => {
+                assert_eq!(status, 402);
+                assert!(message.contains("hosted_payment_required"));
+            }
+            other => panic!("Hosted 402 must be a terminal API error, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn legacy_blocked_402_still_returns_verdict() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(json!({
+            "success": false,
+            "blocked": true,
+            "block_reason": "budget exceeded"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = AxonFlowClient::new(AxonFlowConfig {
+        endpoint: server.uri(),
+        mode: Mode::Production,
+        retry: RetryConfig {
+            enabled: true,
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+        },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    let response = client
+        .proxy_llm_call("user", "legacy budget probe", "chat", HashMap::new())
+        .await
+        .expect("explicit blocked verdict remains a response");
+    assert!(!response.success);
+    assert!(response.blocked);
+    assert_eq!(response.block_reason.as_deref(), Some("budget exceeded"));
+}
+
 // Companion to `test_401_not_retried_issue_2275` — locks in the OTHER
 // direction of the retry allowlist: 429 (rate limit) MUST trigger retry
 // up to `max_attempts`. Without this, a future refactor that drops
