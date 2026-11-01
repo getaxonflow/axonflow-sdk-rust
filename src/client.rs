@@ -889,7 +889,8 @@ impl AxonFlowClient {
     ///   issue [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
     ///   for the customer-observed retry loop that motivated the
     ///   regression-locking test `test_401_not_retried_issue_2275`.
-    /// - Every other 4xx, including an answered Hosted 402. Legacy
+    /// - Every other 4xx except a generic retryable 429, including an
+    ///   answered Hosted 402 and a Hosted monthly-governance-cap 429. Legacy
     ///   self-hosted 402/403 responses with an explicit blocked verdict
     ///   return as `Ok(client_resp)` and do not enter this retry loop.
     ///
@@ -913,8 +914,9 @@ impl AxonFlowClient {
                     if let AxonFlowError::ApiError { status, .. } = &e {
                         // An answered 402/403 without an explicit blocked
                         // verdict is an error, not an unavailable platform.
-                        // Only 429 remains retryable among 4xx statuses.
-                        if *status >= 400 && *status < 500 && *status != 429 {
+                        // A generic 429 remains retryable; the Hosted monthly
+                        // cap is an answered refusal and must be terminal.
+                        if *status >= 400 && *status < 500 && !e.is_retryable() {
                             return Err(e);
                         }
                     }

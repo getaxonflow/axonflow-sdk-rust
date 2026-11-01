@@ -67,7 +67,9 @@ impl AxonFlowError {
     pub fn is_retryable(&self) -> bool {
         match self {
             AxonFlowError::HttpError(e) => e.is_timeout() || e.is_connect(),
-            AxonFlowError::ApiError { status, .. } => *status >= 500 || *status == 429,
+            AxonFlowError::ApiError { status, message } => {
+                *status >= 500 || (*status == 429 && !is_hosted_monthly_limit(message))
+            }
             AxonFlowError::RateLimited { .. } => true,
             AxonFlowError::Unavailable(_) => true,
             // The platform's own signal, not the status alone: it sends
@@ -92,6 +94,16 @@ impl AxonFlowError {
     pub fn is_fail_open_eligible(&self) -> bool {
         !matches!(self, AxonFlowError::TypedPolicyRefusal(_)) && self.is_retryable()
     }
+}
+
+// The Hosted Agent answers a depleted monthly governance allowance with an
+// explicit error code. A generic 429 is still a retryable capacity failure.
+fn is_hosted_monthly_limit(message: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(message)
+        .ok()
+        .is_some_and(|body| {
+            body.get("error").and_then(|code| code.as_str()) == Some("hosted_monthly_limit_reached")
+        })
 }
 
 impl PartialEq for AxonFlowError {

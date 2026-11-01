@@ -9,12 +9,21 @@ async fn main() {
         eprintln!("only the HTTPS Hosted staging Agent origin is allowed");
         std::process::exit(2);
     }
-    let client_id = std::env::var("AXONFLOW_HOSTED_UNPAID_CLIENT_ID").unwrap_or_default();
-    let secret = std::env::var("AXONFLOW_HOSTED_UNPAID_CLIENT_SECRET").unwrap_or_default();
+    let client_id = std::env::var("AXONFLOW_HOSTED_STAGING_CLIENT_ID").unwrap_or_default();
+    let secret = std::env::var("AXONFLOW_HOSTED_STAGING_CLIENT_SECRET").unwrap_or_default();
     if client_id.is_empty() || secret.is_empty() {
-        eprintln!("staging unpaid Basic credential is required");
+        eprintln!("staging fixture credential is required");
         std::process::exit(2);
     }
+    let expected = std::env::var("AXONFLOW_HOSTED_EXPECTED_STATUS").unwrap_or_default();
+    let (expected_status, expected_code) = match expected.as_str() {
+        "402" => (402, "hosted_payment_required"),
+        "429" => (429, "hosted_monthly_limit_reached"),
+        _ => {
+            eprintln!("AXONFLOW_HOSTED_EXPECTED_STATUS must be 402 or 429");
+            std::process::exit(2);
+        }
+    };
 
     let client = AxonFlowClient::new(AxonFlowConfig {
         endpoint: endpoint.to_string(),
@@ -38,16 +47,13 @@ async fn main() {
         )
         .await
     {
-        Err(AxonFlowError::ApiError {
-            status: 402,
-            message,
-        }) if message.contains("hosted_payment_required")
-            && message.contains("\"checkout_method\":\"POST\"") =>
+        Err(AxonFlowError::ApiError { status, message })
+            if status == expected_status && message.contains(expected_code) =>
         {
-            println!("PASS: real Hosted staging 402 is a terminal Rust error");
+            println!("PASS: real Hosted staging {expected_status} is a terminal Rust error");
         }
         _ => {
-            eprintln!("Hosted 402 did not surface as a terminal payment error");
+            eprintln!("Hosted refusal did not surface as a terminal HTTP error");
             std::process::exit(1);
         }
     }

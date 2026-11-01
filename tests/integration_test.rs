@@ -510,6 +510,113 @@ async fn test_429_is_retried_allowlist_contract() {
 }
 
 #[tokio::test]
+async fn hosted_monthly_limit_429_is_terminal_in_production() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
+            "error": "hosted_monthly_limit_reached",
+            "message": "Monthly hosted governance allowance reached.",
+            "limit_type": "monthly_governed_events",
+            "higher_usage_path": "paid_enterprise_poc"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = AxonFlowClient::new(AxonFlowConfig {
+        endpoint: server.uri(),
+        mode: Mode::Production,
+        retry: RetryConfig {
+            enabled: true,
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+        },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+
+    let result = client
+        .proxy_llm_call("user", "monthly cap probe", "chat", HashMap::new())
+        .await;
+    match result {
+        Err(axonflow_sdk_rust::AxonFlowError::ApiError { status, message }) => {
+            assert_eq!(status, 429);
+            assert!(message.contains("hosted_monthly_limit_reached"));
+        }
+        other => panic!("Hosted monthly cap must be terminal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ordinary_429_keeps_production_fail_open() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({"error": "rate_limited"})))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let client = AxonFlowClient::new(AxonFlowConfig {
+        endpoint: server.uri(),
+        mode: Mode::Production,
+        retry: RetryConfig {
+            enabled: true,
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+        },
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+
+    let response = client
+        .proxy_llm_call("user", "ordinary 429 probe", "chat", HashMap::new())
+        .await
+        .expect("ordinary 429 retains production fail-open");
+    assert!(response.success);
+}
+
+#[tokio::test]
+async fn ordinary_200_still_returns_governed_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/request"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "request_id": "governed-200"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = AxonFlowClient::new(AxonFlowConfig {
+        endpoint: server.uri(),
+        mode: Mode::Production,
+        cache: CacheConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    let response = client
+        .proxy_llm_call("user", "ordinary 200 probe", "chat", HashMap::new())
+        .await
+        .expect("governed 200");
+    assert!(response.success);
+    assert_eq!(response.request_id.as_deref(), Some("governed-200"));
+}
+
+#[tokio::test]
 async fn test_list_connectors() {
     let server = MockServer::start().await;
 
