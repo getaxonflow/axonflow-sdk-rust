@@ -66,7 +66,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 axonflow-authzen-codegen = { path = "tools/gen-authzen-types" }
 # Reads src/ for the wire-shape contract (tests/wire_shape_contract.rs), and
 # walks it for the PEP handshake call-site census (tests/pep_handshake_test.rs).
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 
 [[example]]
 name = "authzen"
