@@ -15,6 +15,10 @@ pub enum AxonFlowError {
     SerdeError(#[from] serde_json::Error),
     #[error("API error ({status}): {message}")]
     ApiError { status: u16, message: String },
+    /// The Hosted Agent answered with its monthly governance cap (HTTP 429).
+    /// The tier-limit header is authoritative even if the body is truncated.
+    #[error("Hosted monthly governance limit reached (429): {message}")]
+    HostedMonthlyLimit { message: String },
     /// Tier-cap 429 with a parsed V1 upgrade envelope. Distinct from a
     /// generic 429 ApiError because callers should branch on the upgrade
     /// fields (tier / compare_url / buy_url) without re-parsing the
@@ -94,6 +98,16 @@ impl AxonFlowError {
     }
 }
 
+// The Hosted Agent answers a depleted monthly governance allowance with an
+// explicit error code. A generic 429 is still a retryable capacity failure.
+pub(crate) fn is_hosted_monthly_limit(message: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(message)
+        .ok()
+        .is_some_and(|body| {
+            body.get("error").and_then(|code| code.as_str()) == Some("hosted_monthly_limit_reached")
+        })
+}
+
 impl PartialEq for AxonFlowError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -114,6 +128,9 @@ impl PartialEq for AxonFlowError {
                     message: m2,
                 },
             ) => s1 == s2 && m1 == m2,
+            (Self::HostedMonthlyLimit { message: a }, Self::HostedMonthlyLimit { message: b }) => {
+                a == b
+            }
             (Self::RateLimited { envelope: e1 }, Self::RateLimited { envelope: e2 }) => e1 == e2,
             (Self::ConfigError(m1), Self::ConfigError(m2)) => m1 == m2,
             (Self::Unavailable(m1), Self::Unavailable(m2)) => m1 == m2,

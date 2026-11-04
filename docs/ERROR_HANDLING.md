@@ -117,8 +117,8 @@ The SDK maps HTTP status codes as follows:
 | Status Code | AxonFlowError Variant | Note |
 |-------------|-----------------------|------|
 | 200 OK | `Ok(T)` | Standard success |
-| 402/403 | `Ok(ClientResponse)` | Blocked requests are returned as `Ok` with `blocked: true` |
-| 429 | `ApiError` | Rate limited (Retryable) |
+| 402/403 | `Ok(ClientResponse)` or `ApiError` | Explicit blocked verdicts return `Ok`; Hosted payment refusals are terminal errors |
+| 429 | `HostedMonthlyLimit` or `ApiError` | The Hosted monthly cap is terminal, including a malformed body with its tier-limit header; ordinary rate limits remain retryable |
 | 4xx | `ApiError` | Client errors (Non-retryable) |
 | 5xx | `ApiError` | Server errors (Retryable) |
 | Connection Refused | `HttpError` | Trigger fail-open in Production |
