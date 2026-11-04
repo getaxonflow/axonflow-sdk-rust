@@ -26,7 +26,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axonflow-sdk-rust = "0.12.0"
+axonflow-sdk-rust = "0.12.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
